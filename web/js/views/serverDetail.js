@@ -186,7 +186,7 @@ function disksCard(f) {
     body: dataTable({
       columns: [
         { label: 'Mount', render: (d) => '<b style="font-family:var(--mono);font-size:12px">' + escapeHtml(d.mount) + '</b><div class="muted" style="font-size:11px">' + escapeHtml(d.filesystem) + '</div>' },
-        { label: 'Usage', width: '180px', render: (d) => meter(d.usedPct) },
+        { label: 'Usage', width: '150px', render: (d) => meter(d.usedPct) },
         { label: 'Free', width: '96px', align: 'right', render: (d) => bytes(d.availBytes) },
         { label: 'Size', width: '96px', align: 'right', render: (d) => bytes(d.totalBytes) },
         {

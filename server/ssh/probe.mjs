@@ -104,6 +104,23 @@ const SCRIPT = [
 
   /* ---- clock ---- */
   'S ntp; timedatectl show -p NTPSynchronized --value 2>/dev/null',
+
+  /* ---- docker ---- */
+  // Every one of these is a read. `docker system df`, `ps`, `images` and
+  // `volume ls` inspect; none of them create, start, stop or remove anything.
+  //
+  // Talking to the daemon at all needs the docker group, which is
+  // root-equivalent - anyone in it can start a privileged container and own
+  // the host. So `denied` is the expected answer for a properly unprivileged
+  // login, and it is reported as a limitation rather than as `no docker here`.
+  'S dockersrc; if have docker; then if docker info >/dev/null 2>&1; then echo ok; else echo denied; fi; else echo none; fi',
+  'S dockerversion; docker version --format "{{.Server.Version}}" 2>/dev/null',
+  'S dockerroot; docker info --format "{{.DockerRootDir}}" 2>/dev/null',
+  'S dockerdf; docker system df --format "{{.Type}}\t{{.TotalCount}}\t{{.Active}}\t{{.Size}}\t{{.Reclaimable}}" 2>/dev/null',
+  'S dockerps; docker ps -a --format "{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.State}}\t{{.Status}}\t{{.RunningFor}}\t{{.Size}}" 2>/dev/null | head -300',
+  'S dockerimages; docker images -a --format "{{.ID}}\t{{.Repository}}\t{{.Tag}}\t{{.Size}}\t{{.CreatedAt}}" 2>/dev/null | head -400',
+  'S dockervolumes; docker volume ls --format "{{.Name}}\t{{.Driver}}" 2>/dev/null | head -300',
+  'S dockervolumesdangling; docker volume ls -q --filter dangling=true 2>/dev/null | head -300',
 ].join('\n');
 
 /** Human labels for the checks that can degrade, used by the UI. */
@@ -119,6 +136,9 @@ export const LIMITED_REASONS = {
   'failed-units': 'Failed systemd units. This host does not run systemd, or systemctl is unavailable to this user.',
   'disks': 'Filesystem usage. df returned nothing usable.',
   'ports': 'Listening sockets. Neither ss nor netstat is installed.',
+  docker:
+    'Docker containers, images and reclaimable space. The daemon refused this login. That is the expected result of running Vigil unprivileged, ' +
+    'because reaching the Docker socket is root-equivalent - so it is opt-in rather than assumed.',
 };
 
 /**
@@ -129,6 +149,9 @@ export const LIMITED_FIX = {
   'port-process-names': '<user> ALL=(root) NOPASSWD: /usr/bin/ss -H -tuln -p',
   'auth-failures': '<user> ALL=(root) NOPASSWD: /usr/bin/journalctl -q --since -24?hours -t sshd',
   'sshd-effective': '<user> ALL=(root) NOPASSWD: /usr/sbin/sshd -T',
+  // A group, not a sudo rule - and a root-equivalent one. Spelled out here
+  // so nobody grants it casually to make a dashboard card fill in.
+  docker: 'usermod -aG docker <user>   # root-equivalent: grant deliberately',
 };
 
 const num = (v) => {
@@ -140,6 +163,81 @@ const num = (v) => {
   const n = Number(s);
   return Number.isFinite(n) ? n : null;
 };
+
+/**
+ * Docker inventory.
+ *
+ * Returns null when Docker is not installed, which is different from an empty
+ * inventory - a host with no Docker has nothing to clean up, and a host whose
+ * daemon refused us has an unknown amount to clean up.
+ *
+ * The reclaimable figures come from `docker system df` rather than from summing
+ * the object listings, because that is the number `docker system prune` will
+ * actually free: it accounts for layer sharing between images, which naive
+ * addition double-counts, often by several gigabytes on a build host.
+ */
+function assembleDocker(s, limited) {
+  const source = s.dockersrc || 'none';
+  if (source === 'none') return null;
+
+  if (source !== 'ok') {
+    limited.push('docker');
+    return { installed: true, accessible: false, version: null };
+  }
+
+  const containers = p.parseDockerContainers(s.dockerps) ?? [];
+  const images = p.parseDockerImages(s.dockerimages) ?? [];
+  const volumes = p.parseDockerVolumes(s.dockervolumes) ?? [];
+  const danglingVolumeNames = new Set(
+    (s.dockervolumesdangling || '').split('\n').map((v) => v.trim()).filter(Boolean)
+  );
+  const df = p.parseDockerDf(s.dockerdf) ?? {};
+
+  const byState = (state) => containers.filter((c) => c.state === state);
+  const dangling = images.filter((i) => i.dangling);
+
+  const reclaimable = {
+    images: df.images?.reclaimableBytes ?? 0,
+    containers: df.containers?.reclaimableBytes ?? 0,
+    volumes: df['local-volumes']?.reclaimableBytes ?? 0,
+    buildCache: df['build-cache']?.reclaimableBytes ?? 0,
+  };
+
+  return {
+    installed: true,
+    accessible: true,
+    version: s.dockerversion || null,
+    rootDir: s.dockerroot || null,
+    containers: {
+      total: containers.length,
+      running: byState('running').length,
+      exited: byState('exited').length,
+      created: byState('created').length,
+      paused: byState('paused').length,
+      restarting: byState('restarting').length,
+      dead: byState('dead').length,
+      unhealthy: containers.filter((c) => c.healthy === false).length,
+      items: containers.slice(0, 200),
+    },
+    images: {
+      total: images.length,
+      dangling: dangling.length,
+      danglingBytes: dangling.reduce((a, i) => a + i.sizeBytes, 0),
+      items: images.slice(0, 200),
+    },
+    volumes: {
+      total: volumes.length,
+      dangling: danglingVolumeNames.size,
+      danglingNames: [...danglingVolumeNames].slice(0, 60),
+    },
+    df,
+    reclaimable,
+    // Volumes are deliberately excluded from the headline: pruning them
+    // destroys data, so it is never part of the number that invites a click.
+    reclaimableBytes: reclaimable.images + reclaimable.containers + reclaimable.buildCache,
+    reclaimableWithVolumesBytes: reclaimable.images + reclaimable.containers + reclaimable.buildCache + reclaimable.volumes,
+  };
+}
 
 /**
  * Turn raw probe stdout into facts.
@@ -249,6 +347,9 @@ export function assembleFacts(stdout, { durationMs = 0 } = {}) {
   // true skew and not a timezone artefact.
   const skewSeconds = hostClock ? Math.round(Date.now() / 1000) - hostClock : null;
 
+  /* ---- docker ---- */
+  const docker = assembleDocker(s, limited);
+
   const facts = {
     collectedAt: new Date().toISOString(),
     durationMs,
@@ -279,6 +380,7 @@ export function assembleFacts(stdout, { durationMs = 0 } = {}) {
     security,
     processes,
     time: { ntpSynchronized: s.ntp === 'yes' ? true : s.ntp === 'no' ? false : null, skewSeconds },
+    docker,
   };
 
   return { facts, limited: [...new Set(limited)] };

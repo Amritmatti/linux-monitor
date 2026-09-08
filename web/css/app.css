@@ -381,13 +381,6 @@ select.input:focus, input.input:focus { border-color: var(--accent); box-shadow:
 .stat-delta { font-weight: 600; display: inline-flex; align-items: center; gap: 3px; }
 .stat-spark { margin-top: 9px; height: 30px; }
 
-/* meter ------------------------------------------------------------------- */
-.meter { height: 6px; border-radius: 4px; background: var(--seq-100); overflow: hidden; }
-.meter-fill { height: 100%; border-radius: 4px; background: var(--accent); }
-.meter-fill.good { background: var(--good); }
-.meter-fill.warning { background: var(--warning); }
-.meter-fill.critical { background: var(--critical); }
-
 /* tables ------------------------------------------------------------------ */
 .table-wrap { overflow-x: auto; }
 table.data { width: 100%; border-collapse: collapse; font-size: 12.5px; }
@@ -500,10 +493,6 @@ table.data th.sorted .sort-arrow { opacity: 1; color: var(--accent); }
 .compare-arrow .save { font-size: 13px; font-weight: 650; color: var(--good-text); white-space: nowrap; }
 
 /* evidence & factors ------------------------------------------------------ */
-.kv { display: grid; grid-template-columns: minmax(140px, auto) 1fr; gap: 7px 18px; font-size: 12.5px; }
-.kv dt { color: var(--ink-3); }
-.kv dd { margin: 0; color: var(--ink); }
-
 .evidence-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .evidence-item { border: 1px solid var(--hairline); border-radius: var(--radius-sm); padding: 10px 12px; background: var(--surface-2); }
 .evidence-item .label { font-size: 11px; color: var(--ink-3); font-weight: 550; }
@@ -726,12 +715,22 @@ pre.code .del { color: var(--critical); }
 .issue-row.is-acked { opacity: .55; }
 
 /* --- usage meters -------------------------------------------------------- */
-.meter { display: flex; align-items: center; gap: 8px; min-width: 130px; }
-.meter-track { flex: 1; height: 6px; border-radius: 999px; background: var(--surface-3); overflow: hidden; min-width: 54px; }
+/*
+ * The track is a fixed width rather than flex:1 on purpose. Stretching it to
+ * fill its column made a bar mean different things in different tables - and
+ * put the Usage and Inode percentages at different offsets, so neither the
+ * bars nor the numbers lined up down the page.
+ */
+.meter { display: flex; align-items: center; gap: 9px; }
+.meter-track { width: 84px; flex: none; height: 6px; border-radius: 999px; background: var(--surface-3); overflow: hidden; }
 .meter-fill { height: 100%; border-radius: 999px; background: var(--good); transition: width .3s ease; }
 .meter-fill.warning { background: var(--warning); }
 .meter-fill.critical { background: var(--critical); }
-.meter-value { font-variant-numeric: tabular-nums; font-size: 11.5px; color: var(--ink-2); min-width: 34px; text-align: right; }
+/* Tabular figures and a fixed slot, so 8%, 47% and 100% all end on the same
+   column and the digits do not shuffle sideways between rows. */
+.meter-value { font-variant-numeric: tabular-nums; font-size: 12px; color: var(--ink-2); min-width: 38px; text-align: right; }
+/* Inside a server card there is no column to align to, so it may breathe. */
+.srv-card .meter-track { width: auto; flex: 1; }
 
 /* --- ports --------------------------------------------------------------- */
 .port { display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 11.5px;
@@ -786,7 +785,7 @@ pre.code .del { color: var(--critical); }
 /* --- misc ---------------------------------------------------------------- */
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 7px 15px; font-size: 12.5px; }
 .kv dt { color: var(--ink-3); white-space: nowrap; }
-.kv dd { color: var(--ink); text-align: right; font-variant-numeric: tabular-nums; }
+.kv dd { margin: 0; color: var(--ink); text-align: right; font-variant-numeric: tabular-nums; }
 .stale-flag { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--warning); }
 .limited-note { font-size: 12px; color: var(--ink-2); line-height: 1.6; }
 .limited-note + .limited-note { margin-top: 9px; }

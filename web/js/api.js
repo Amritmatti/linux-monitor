@@ -84,6 +84,7 @@ export const api = {
   ports: () => get('/api/ports', { ttl: 5000 }),
   updates: () => get('/api/updates', { ttl: 5000 }),
   disks: () => get('/api/disks', { ttl: 5000 }),
+  docker: () => get('/api/docker', { ttl: 5000 }),
 
   servers: () => get('/api/servers', { ttl: 2000 }),
   server: (id) => get('/api/servers/' + encodeURIComponent(id), { ttl: 1500 }),
@@ -93,6 +94,7 @@ export const api = {
   scanServer: (id) => post('/api/servers/' + encodeURIComponent(id) + '/scan'),
   resetHostKey: (id) => post('/api/servers/' + encodeURIComponent(id) + '/reset-host-key'),
   scanAll: () => post('/api/scan'),
+  pruneDocker: (serverId, action) => post('/api/servers/' + encodeURIComponent(serverId) + '/docker-prune', { action }),
 
   acknowledge: (serverId, key, reason, value) => post('/api/servers/' + encodeURIComponent(serverId) + '/ack', { key, reason, value }),
   unacknowledge: (serverId, key) => del('/api/servers/' + encodeURIComponent(serverId) + '/ack?key=' + encodeURIComponent(key)),
@@ -100,7 +102,7 @@ export const api = {
 
 /* ------------------------------------------------------------ live updates */
 
-const EVENT_TYPES = ['scan-started', 'scan-progress', 'scan-finished', 'scan-complete', 'ack-changed'];
+const EVENT_TYPES = ['scan-started', 'scan-progress', 'scan-finished', 'scan-complete', 'ack-changed', 'docker-pruned'];
 
 export function connectEvents(onEvent, onStatus) {
   let source;

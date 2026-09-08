@@ -19,6 +19,7 @@ import * as repo from './repo/servers.mjs';
 import * as store from './store.mjs';
 import { LIMITED_REASONS, LIMITED_FIX } from './ssh/probe.mjs';
 import { RISKY_PORTS, THRESHOLDS } from './engine/checks.mjs';
+import { availableActions, PRUNE_ACTIONS, PRUNE_ENABLED } from './ssh/prune.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const WEB_ROOT = join(__dirname, '..', 'web');
@@ -367,6 +368,25 @@ async function handleServers(req, res, url, user) {
     return sendJson(res, 200, { ok: true });
   }
 
+  // The only write path in the product. It takes an action KEY, looks it up in
+  // a fixed table, and runs the constant string it finds - a command never
+  // crosses this boundary.
+  if (action === 'docker-prune' && req.method === 'POST') {
+    if (!PRUNE_ENABLED) {
+      return sendJson(res, 403, {
+        error: 'prune_disabled',
+        message: 'Docker cleanup is disabled on this instance. Set VG_ALLOW_DOCKER_PRUNE=on to enable it.',
+      });
+    }
+    const body = await readBody(req);
+    if (!Object.hasOwn(PRUNE_ACTIONS, String(body.action ?? ''))) {
+      return sendJson(res, 400, { error: 'unknown_action', message: 'No such cleanup action.' });
+    }
+    const result = await store.pruneDocker(user.id, id, String(body.action), { actor: user.email });
+    if (result.error === 'not_found') return sendJson(res, 404, { error: 'not_found' });
+    return sendJson(res, result.ok ? 200 : 400, result);
+  }
+
   if (action === 'ack' && req.method === 'POST') {
     const body = await readBody(req);
     if (!body.key) return sendJson(res, 400, { error: 'missing_key', message: 'Which finding?' });
@@ -544,6 +564,53 @@ async function handleFleet(req, res, url, user) {
     });
   }
 
+  if (path === '/api/docker' && req.method === 'GET') {
+    const inv = await store.inventory(user.id);
+    const items = [];
+    let unavailable = [];
+    for (const entry of inv) {
+      const d = entry.facts.docker;
+      if (!d || !d.installed) continue;
+      if (!d.accessible) {
+        unavailable.push({ serverId: entry.serverId, serverName: entry.serverName, reason: 'The daemon refused this login' });
+        continue;
+      }
+      items.push({
+        serverId: entry.serverId,
+        serverName: entry.serverName,
+        serverHost: entry.serverHost,
+        observedAt: entry.observedAt,
+        version: d.version,
+        rootDir: d.rootDir,
+        containers: { ...d.containers, items: d.containers.items },
+        images: d.images,
+        volumes: d.volumes,
+        reclaimable: d.reclaimable,
+        reclaimableBytes: d.reclaimableBytes,
+        reclaimableWithVolumesBytes: d.reclaimableWithVolumesBytes,
+      });
+    }
+    items.sort((a, b) => b.reclaimableBytes - a.reclaimableBytes || a.serverName.localeCompare(b.serverName));
+    return sendJson(res, 200, {
+      items,
+      unavailable,
+      actions: availableActions(),
+      pruneEnabled: PRUNE_ENABLED,
+      totals: {
+        hosts: items.length,
+        reclaimableBytes: items.reduce((a, i) => a + i.reclaimableBytes, 0),
+        volumeBytes: items.reduce((a, i) => a + (i.reclaimable.volumes ?? 0), 0),
+        containers: items.reduce((a, i) => a + i.containers.total, 0),
+        running: items.reduce((a, i) => a + i.containers.running, 0),
+        exited: items.reduce((a, i) => a + i.containers.exited, 0),
+        restarting: items.reduce((a, i) => a + i.containers.restarting, 0),
+        unhealthy: items.reduce((a, i) => a + i.containers.unhealthy, 0),
+        danglingImages: items.reduce((a, i) => a + i.images.dangling, 0),
+        danglingVolumes: items.reduce((a, i) => a + i.volumes.dangling, 0),
+      },
+    });
+  }
+
   if (path === '/api/scan' && req.method === 'POST') {
     // Deliberately not awaited: a fleet sweep can take minutes, and the browser
     // follows it on the event stream rather than holding a request open.
@@ -603,11 +670,25 @@ async function serveStatic(req, res, url) {
   try {
     const info = await stat(full);
     if (!info.isFile()) throw new Error('not a file');
+
+    // Validated caching rather than timed caching. There is no build step here,
+    // so filenames never change - and a max-age meant that for minutes after an
+    // upgrade a browser would run the old dashboard against the new API, which
+    // fails in ways nobody can reproduce. `no-cache` means "reuse it, but ask
+    // first", and the ETag makes that question a 304 with no body.
+    const etag = '"' + info.size.toString(36) + '-' + Math.floor(info.mtimeMs).toString(36) + '"';
+    if (req.headers['if-none-match'] === etag) {
+      res.writeHead(304, { etag, 'cache-control': 'no-cache' });
+      res.end();
+      return;
+    }
+
     const body = await readFile(full);
     res.writeHead(200, {
       'content-type': MIME[extname(full)] ?? 'application/octet-stream',
       'content-length': body.length,
-      'cache-control': extname(full) === '.html' ? 'no-cache' : 'public, max-age=300',
+      'cache-control': 'no-cache',
+      etag,
     });
     res.end(body);
   } catch {

@@ -52,12 +52,12 @@ export async function render(root, { app }) {
         width: '160px',
         render: (d) => '<a href="#/servers/' + d.serverId + '">' + escapeHtml(d.serverName) + '</a>',
       },
-      { label: 'Usage', width: '190px', render: (d) => meter(d.usedPct) },
+      { label: 'Usage', width: '150px', render: (d) => meter(d.usedPct) },
       { label: 'Free', width: '92px', align: 'right', render: (d) => bytes(d.availBytes) },
       { label: 'Size', width: '92px', align: 'right', render: (d) => bytes(d.totalBytes) },
       {
         label: 'Inodes',
-        width: '160px',
+        width: '150px',
         render: (d) => (Number.isFinite(d.inodesUsedPct) ? meter(d.inodesUsedPct, { warn: 85, crit: 90 }) : '<span class="muted">n/a</span>'),
       },
       {

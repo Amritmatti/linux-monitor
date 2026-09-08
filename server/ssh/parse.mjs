@@ -458,3 +458,121 @@ function round2(n) {
 }
 
 export { round2 };
+
+/* --------------------------------------------------------------------- docker */
+
+/**
+ * Docker's own size strings: "1.2GB", "0B", "435.7MB", "1.09kB (virtual 72.8MB)".
+ *
+ * `docker system df` formats with base-1000 units (kB, MB, GB) while other
+ * subcommands sometimes emit base-1024 (KiB, MiB, GiB). Both are handled, and
+ * they are not the same number - reporting a 7% error on reclaimable space is
+ * the sort of thing that makes someone stop trusting the page.
+ */
+export function parseDockerSize(text) {
+  const m = String(text ?? '').trim().match(/^(-?[\d.]+)\s*([kKMGTP]?i?B)\b/);
+  if (!m) return null;
+  const n = Number(m[1]);
+  if (!Number.isFinite(n)) return null;
+  const unit = m[2];
+  const base = /iB$/i.test(unit) ? 1024 : 1000;
+  const power = { b: 0, k: 1, m: 2, g: 3, t: 4, p: 5 }[unit[0].toLowerCase()] ?? 0;
+  return Math.round(n * base ** power);
+}
+
+/**
+ * `docker system df --format '{{.Type}}\t{{.TotalCount}}\t{{.Active}}\t{{.Size}}\t{{.Reclaimable}}'`
+ *
+ * This is the authoritative reclaimable figure - it is what `docker system
+ * prune` would actually free - so it is preferred over anything summed from the
+ * per-object listings.
+ */
+export function parseDockerDf(text) {
+  if (!nonEmpty(text)) return null;
+  const out = {};
+  for (const line of text.split('\n')) {
+    const p = line.split('\t');
+    if (p.length < 5) continue;
+    const key = p[0].trim().toLowerCase().replace(/\s+/g, '-');
+    out[key] = {
+      total: int(p[1]) ?? 0,
+      active: int(p[2]) ?? 0,
+      bytes: parseDockerSize(p[3]) ?? 0,
+      reclaimableBytes: parseDockerSize(p[4]) ?? 0,
+    };
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+/** Health and restart state live inside the Status string, not in State. */
+function statusDetail(status) {
+  const s = String(status ?? '');
+  return {
+    healthy: /\(healthy\)/i.test(s) ? true : /\(unhealthy\)/i.test(s) ? false : null,
+    exitCode: (s.match(/Exited \((\d+)\)/) || [])[1] ?? null,
+  };
+}
+
+/**
+ * `docker ps -a --format '{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.State}}\t{{.Status}}\t{{.RunningFor}}\t{{.Size}}'`
+ */
+export function parseDockerContainers(text) {
+  if (text === null || text === undefined) return null;
+  const out = [];
+  for (const line of String(text).split('\n')) {
+    if (!line.trim()) continue;
+    const p = line.split('\t');
+    if (p.length < 5) continue;
+    const detail = statusDetail(p[4]);
+    out.push({
+      id: p[0].trim(),
+      name: p[1].trim(),
+      image: p[2].trim(),
+      state: p[3].trim().toLowerCase(),
+      status: p[4].trim(),
+      age: (p[5] ?? '').trim() || null,
+      // The writable layer only; the image underneath is counted separately.
+      sizeBytes: parseDockerSize(p[6]) ?? 0,
+      healthy: detail.healthy,
+      exitCode: detail.exitCode === null ? null : Number(detail.exitCode),
+    });
+  }
+  return out;
+}
+
+/** `docker images --format '{{.ID}}\t{{.Repository}}\t{{.Tag}}\t{{.Size}}\t{{.CreatedAt}}'` */
+export function parseDockerImages(text) {
+  if (text === null || text === undefined) return null;
+  const out = [];
+  for (const line of String(text).split('\n')) {
+    if (!line.trim()) continue;
+    const p = line.split('\t');
+    if (p.length < 4) continue;
+    const repo = p[1].trim();
+    const tag = p[2].trim();
+    out.push({
+      id: p[0].trim(),
+      repository: repo,
+      tag,
+      // Docker shows an untagged image as <none>:<none>; that is what dangling
+      // means, and it is the bulk of what a build server wastes space on.
+      dangling: repo === '<none>' || tag === '<none>',
+      name: repo === '<none>' ? p[0].trim() : repo + ':' + tag,
+      sizeBytes: parseDockerSize(p[3]) ?? 0,
+      createdAt: (p[4] ?? '').trim() || null,
+    });
+  }
+  return out;
+}
+
+/** `docker volume ls --format '{{.Name}}\t{{.Driver}}'` */
+export function parseDockerVolumes(text) {
+  if (text === null || text === undefined) return null;
+  const out = [];
+  for (const line of String(text).split('\n')) {
+    if (!line.trim()) continue;
+    const p = line.split('\t');
+    out.push({ name: p[0].trim(), driver: (p[1] ?? '').trim() || null });
+  }
+  return out;
+}

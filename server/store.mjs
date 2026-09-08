@@ -19,6 +19,7 @@ import { collect } from './ssh/probe.mjs';
 import { evaluate, SEVERITY_RANK } from './engine/checks.mjs';
 import { detect } from './engine/anomalies.mjs';
 import { audit } from './auth/users.mjs';
+import { prune as runPrune } from './ssh/prune.mjs';
 
 export const events = new EventEmitter();
 // One listener per connected browser tab; a fleet dashboard left open on a wall
@@ -443,6 +444,40 @@ export async function inventory(userId) {
     limited: r.limited ?? [],
     facts: r.facts,
   }));
+}
+
+/**
+ * Run one allowlisted Docker cleanup against a server, then immediately
+ * re-scan it.
+ *
+ * The re-scan is the point: without it the dashboard would keep showing the
+ * space it just freed, and the person would have no way to tell whether the
+ * cleanup did anything. It also means the audit trail has a before and an
+ * after.
+ */
+export async function pruneDocker(userId, serverId, actionKey, { actor }) {
+  const server = await repo.getServer(userId, serverId);
+  if (!server) return { ok: false, error: 'not_found' };
+
+  const before = (await lastGoodScan(userId, serverId))?.facts?.docker?.reclaimableBytes ?? null;
+  const creds = await repo.credentialsFor(userId, serverId);
+  if (!creds?.privateKey) return { ok: false, error: 'no_key', message: 'No usable private key is stored for this server' };
+
+  const result = await runPrune(creds, actionKey).catch((err) => ({ ok: false, error: 'ssh_failed', message: err.message }));
+
+  await audit(
+    userId,
+    actor,
+    result.ok ? 'docker-prune' : 'docker-prune-failed',
+    server.name + ' (' + server.host + '): ' + actionKey + (result.reclaimed ? ' reclaimed ' + result.reclaimed : '') + (result.message ? ' - ' + result.message : ''),
+    { serverId, action: actionKey, command: result.command ?? null, reclaimed: result.reclaimed ?? null }
+  );
+
+  if (result.ok) await scanServer(userId, serverId, { actor });
+  const after = (await lastGoodScan(userId, serverId))?.facts?.docker?.reclaimableBytes ?? null;
+
+  emit(userId, 'docker-pruned', { serverId, action: actionKey, ok: result.ok });
+  return { ...result, beforeBytes: before, afterBytes: after };
 }
 
 /* ------------------------------------------------------------------ scheduler */

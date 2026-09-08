@@ -57,6 +57,17 @@ services:
       VG_SSH_COMMAND_TIMEOUT_MS: ${VG_SSH_COMMAND_TIMEOUT_MS:-45000}
       # Set true when serving over HTTPS so the session cookie is Secure.
       VG_SECURE_COOKIES: ${VG_SECURE_COOKIES:-false}
+
+      # ---- Docker cleanup (the only write path) ----------------------------
+      # OFF by default, which keeps Vigil strictly read-only. Set to "on" and
+      # the Docker page can run a fixed set of `docker ... prune -f` commands
+      # for you. Note this needs the login to be in the docker group on each
+      # host, and that group is root-equivalent.
+      VG_ALLOW_DOCKER_PRUNE: ${VG_ALLOW_DOCKER_PRUNE:-off}
+      # Volume pruning DELETES DATA - a database volume whose container is
+      # merely stopped looks exactly like an abandoned one - so it needs its own
+      # second flag on top of the one above.
+      VG_ALLOW_VOLUME_PRUNE: ${VG_ALLOW_VOLUME_PRUNE:-off}
     volumes:
       - vigil-data:/data
     healthcheck:

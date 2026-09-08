@@ -46,6 +46,10 @@ const T = {
   zombieWarning: 20,
   packageListStaleDays: 7,
   uptimeStaleDays: 365,
+  dockerReclaimWarnBytes: 5 * 1024 ** 3,
+  dockerReclaimCriticalBytes: 20 * 1024 ** 3,
+  dockerExitedWarn: 5,
+  dockerExitedCritical: 25,
 };
 
 /**
@@ -662,6 +666,145 @@ function checkClock(facts, out) {
   }
 }
 
+function checkDocker(facts, out) {
+  const d = facts.docker;
+  if (!d || !d.installed || !d.accessible) return;
+
+  const c = d.containers;
+  const reclaim = d.reclaimableBytes ?? 0;
+
+  // A container stuck restarting is not untidiness, it is an outage that keeps
+  // announcing itself. This is the most valuable thing on this page.
+  if (c.restarting > 0) {
+    const names = c.items.filter((x) => x.state === 'restarting');
+    out.push(
+      finding({
+        key: 'docker:restarting',
+        severity: 'critical',
+        category: 'Docker',
+        title: c.restarting + ' container' + (c.restarting === 1 ? ' is' : 's are') + ' stuck restarting',
+        detail:
+          'Docker is restarting ' + names.map((x) => x.name).slice(0, 4).join(', ') +
+          ' over and over, which means whatever it serves is down or flapping, and the restart loop is burning CPU while it happens.',
+        value: c.restarting,
+        evidence: [
+          { label: 'Containers', value: names.map((x) => x.name).slice(0, 6).join(', ') || '--' },
+          { label: 'Last status', value: names[0]?.status ?? '--' },
+          { label: 'Image', value: names[0]?.image ?? '--' },
+        ],
+        remedy: 'docker logs --tail 100 ' + (names[0]?.name ?? '<container>'),
+      })
+    );
+  }
+
+  if (c.unhealthy > 0) {
+    const names = c.items.filter((x) => x.healthy === false);
+    out.push(
+      finding({
+        key: 'docker:unhealthy',
+        severity: 'critical',
+        category: 'Docker',
+        title: c.unhealthy + ' container' + (c.unhealthy === 1 ? ' is' : 's are') + ' failing their health check',
+        detail:
+          'The container is up, so nothing has restarted it, but its own health check says it is not working. ' +
+          'This is the state that silently serves errors.',
+        value: c.unhealthy,
+        evidence: [
+          { label: 'Containers', value: names.map((x) => x.name).slice(0, 6).join(', ') || '--' },
+          { label: 'Status', value: names[0]?.status ?? '--' },
+        ],
+        remedy: 'docker inspect --format "{{json .State.Health}}" ' + (names[0]?.name ?? '<container>'),
+      })
+    );
+  }
+
+  // Reclaimable space is judged against the filesystem it actually sits on.
+  // 30 GB of images matters enormously on a 40 GB root and not at all on a 4 TB
+  // volume, and a fixed byte threshold cannot tell those apart.
+  const rootDisk = d.rootDir
+    ? (facts.disks ?? [])
+        .filter((disk) => d.rootDir.startsWith(disk.mount))
+        .sort((a, b) => b.mount.length - a.mount.length)[0]
+    : null;
+  const shareOfDisk = rootDisk && rootDisk.totalBytes ? reclaim / rootDisk.totalBytes : null;
+  const wouldRelieve = rootDisk && rootDisk.usedPct >= T.diskWarning && reclaim > 0;
+
+  if (reclaim >= T.dockerReclaimWarnBytes || wouldRelieve) {
+    const critical =
+      reclaim >= T.dockerReclaimCriticalBytes ||
+      (shareOfDisk !== null && shareOfDisk >= 0.25) ||
+      (rootDisk && rootDisk.usedPct >= T.diskCritical && reclaim > 1024 ** 3);
+
+    out.push(
+      finding({
+        key: 'docker:reclaimable',
+        severity: critical ? 'critical' : 'warning',
+        category: 'Docker',
+        title: bytes(reclaim) + ' of Docker data is reclaimable',
+        detail:
+          'Stopped containers, unused images and build cache that nothing references. ' +
+          (rootDisk
+            ? 'Docker stores this on ' + rootDisk.mount + ', which is ' + rootDisk.usedPct + '% full' +
+              (shareOfDisk !== null ? ' - reclaiming it would give back ' + Math.round(shareOfDisk * 100) + '% of that filesystem.' : '.')
+            : 'Docker\'s data directory could not be matched to a filesystem, so this is reported on size alone.'),
+        value: reclaim / 1024 ** 3,
+        evidence: [
+          { label: 'Images', value: bytes(d.reclaimable.images) },
+          { label: 'Stopped containers', value: bytes(d.reclaimable.containers) },
+          { label: 'Build cache', value: bytes(d.reclaimable.buildCache) },
+          { label: 'Docker root', value: (d.rootDir ?? '--') + (rootDisk ? ' on ' + rootDisk.mount + ' (' + rootDisk.usedPct + '% full)' : '') },
+          // Called out separately, and never in the headline, because pruning
+          // volumes deletes data rather than freeing waste.
+          { label: 'Unused volumes (data!)', value: bytes(d.reclaimable.volumes) + ' in ' + d.volumes.dangling + ' volumes' },
+        ],
+        remedy: 'docker system prune -f          # containers, dangling images and build cache; leaves volumes alone',
+      })
+    );
+  }
+
+  if (c.exited >= T.dockerExitedWarn) {
+    out.push(
+      finding({
+        key: 'docker:exited',
+        severity: c.exited >= T.dockerExitedCritical ? 'warning' : 'info',
+        category: 'Docker',
+        title: c.exited + ' exited containers are still on disk',
+        detail:
+          'Each one keeps its writable layer and its logs until it is removed. Individually small, collectively the thing that fills ' +
+          'a build host, and they make `docker ps -a` unreadable when you are trying to find a real problem.',
+        value: c.exited,
+        evidence: [
+          { label: 'Exited', value: String(c.exited) },
+          { label: 'Running', value: String(c.running) },
+          { label: 'Reclaimable', value: bytes(d.reclaimable.containers) },
+          { label: 'Oldest', value: c.items.filter((x) => x.state === 'exited').slice(-1)[0]?.status ?? '--' },
+        ],
+        remedy: 'docker container prune -f',
+      })
+    );
+  }
+
+  if (d.images.dangling > 0 && d.images.danglingBytes >= 1024 ** 3) {
+    out.push(
+      finding({
+        key: 'docker:dangling-images',
+        severity: 'info',
+        category: 'Docker',
+        title: d.images.dangling + ' dangling images holding ' + bytes(d.images.danglingBytes),
+        detail:
+          'Untagged layers left behind when an image was rebuilt under the same tag. Nothing references them and nothing ever will.',
+        value: d.images.danglingBytes / 1024 ** 3,
+        evidence: [
+          { label: 'Dangling images', value: String(d.images.dangling) },
+          { label: 'Size', value: bytes(d.images.danglingBytes) },
+          { label: 'Total images', value: String(d.images.total) },
+        ],
+        remedy: 'docker image prune -f',
+      })
+    );
+  }
+}
+
 /* ------------------------------------------------------------------ entry point */
 
 /**
@@ -682,6 +825,7 @@ export function evaluate(facts) {
   checkSecurity(facts, out);
   checkPlatform(facts, out);
   checkClock(facts, out);
+  checkDocker(facts, out);
 
   out.sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] || a.category.localeCompare(b.category) || a.title.localeCompare(b.title));
   return out;

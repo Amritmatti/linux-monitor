@@ -12,6 +12,7 @@ import * as serverDetail from './views/serverDetail.js';
 import * as ports from './views/ports.js';
 import * as updates from './views/updates.js';
 import * as disks from './views/disks.js';
+import * as docker from './views/docker.js';
 import * as account from './views/account.js';
 
 const ICONS = {
@@ -22,6 +23,8 @@ const ICONS = {
   ports: '<svg viewBox="0 0 20 20" width="16" height="16"><path d="M8 12l4-4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><path d="M11.5 5.5l1-1a3.2 3.2 0 014.5 4.5l-1 1M8.5 14.5l-1 1a3.2 3.2 0 01-4.5-4.5l1-1" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linecap="round"/></svg>',
   updates: '<svg viewBox="0 0 20 20" width="16" height="16"><path d="M10 2.5v9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M6.5 8.5L10 12l3.5-3.5" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 14.5v1.5a1 1 0 001 1h12a1 1 0 001-1v-1.5" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg>',
   disks: '<svg viewBox="0 0 20 20" width="16" height="16"><ellipse cx="10" cy="5" rx="7" ry="2.5" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M3 5v10c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5V5" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M3 10c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>',
+  docker:
+    '<svg viewBox="0 0 20 20" width="16" height="16"><rect x="2.5" y="9" width="3" height="3" stroke="currentColor" stroke-width="1.3" fill="none"/><rect x="6.2" y="9" width="3" height="3" stroke="currentColor" stroke-width="1.3" fill="none"/><rect x="9.9" y="9" width="3" height="3" stroke="currentColor" stroke-width="1.3" fill="none"/><rect x="6.2" y="5.6" width="3" height="3" stroke="currentColor" stroke-width="1.3" fill="none"/><path d="M2 12.5c0 3 2.4 4.6 5.6 4.6 4.6 0 7.7-2.2 8.6-5.6 1.2.3 2.3-.2 2.8-1-1-.6-2.2-.6-3.1-.1" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   account: '<svg viewBox="0 0 20 20" width="16" height="16"><circle cx="10" cy="7" r="3" stroke="currentColor" stroke-width="1.6" fill="none"/><path d="M4 17c0-3.1 2.7-5 6-5s6 1.9 6 5" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg>',
 };
 
@@ -32,6 +35,7 @@ const ROUTES = [
   { group: 'Inspect', id: 'ports', label: 'Open ports', title: 'Listening sockets', view: ports },
   { group: 'Inspect', id: 'updates', label: 'Updates', title: 'Pending updates & reboots', view: updates },
   { group: 'Inspect', id: 'disks', label: 'Disks', title: 'Filesystem usage', view: disks },
+  { group: 'Inspect', id: 'docker', label: 'Docker', title: 'Docker containers, images & cleanup', view: docker },
   { group: 'Estate', id: 'servers', label: 'Servers', title: 'Servers', view: servers },
   { group: 'Estate', id: 'account', label: 'Account', title: 'Account', view: account },
 ];
