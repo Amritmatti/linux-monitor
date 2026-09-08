@@ -16,6 +16,7 @@ import { waitForDatabase, migrate, close as closeDb } from './db/pool.mjs';
 import { verifyKeyAvailable } from './crypto/secrets.mjs';
 import * as auth from './auth/users.mjs';
 import * as repo from './repo/servers.mjs';
+import * as settings from './repo/settings.mjs';
 import * as store from './store.mjs';
 import { LIMITED_REASONS, LIMITED_FIX } from './ssh/probe.mjs';
 import { RISKY_PORTS, THRESHOLDS } from './engine/checks.mjs';
@@ -122,6 +123,41 @@ function clientIp(req) {
 }
 
 const isUuid = (s) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(s ?? ''));
+
+/**
+ * A version token for the entry-point assets, stamped onto their URLs in the
+ * HTML.
+ *
+ * There is no build step here, so filenames never change - which means a
+ * browser that cached app.css yesterday will happily keep using it. That is not
+ * a theoretical problem: a stale stylesheet against a new dashboard renders
+ * subtly wrong in ways nobody can reproduce, because it looks correct on every
+ * machine that happened to load it after the deploy.
+ *
+ * The token is the newest mtime across those assets, so a deploy that changes
+ * them changes their URL, and a deploy that does not leaves the browser's copy
+ * alone. The HTML itself is served no-cache, so the new URLs are always seen.
+ */
+let assetVersion = '0';
+
+async function computeAssetVersion() {
+  const entries = ['css/app.css', 'js/main.js', 'js/login.js'];
+  let newest = 0;
+  for (const rel of entries) {
+    try {
+      const info = await stat(join(WEB_ROOT, rel));
+      newest = Math.max(newest, info.mtimeMs);
+    } catch {
+      /* a missing entry point is a packaging problem, not a caching one */
+    }
+  }
+  assetVersion = Math.floor(newest).toString(36);
+}
+
+/** Stamp the version onto the asset URLs the shell references directly. */
+function versionAssets(html) {
+  return html.replace(/(href|src)="(\/(?:css|js)\/[\w./-]+\.(?:css|js))"/g, (_, attr, url) => attr + '="' + url + '?v=' + assetVersion + '"');
+}
 
 /* -------------------------------------------------------------------------- */
 /* serialisers                                                                 */
@@ -438,7 +474,7 @@ async function handleFleet(req, res, url, user) {
 
   if (path === '/api/fleet' && req.method === 'GET') {
     const { servers, totals } = await store.fleet(user.id);
-    return sendJson(res, 200, { servers: servers.map(serverOut), totals });
+    return sendJson(res, 200, { servers: servers.map(serverOut), totals, pruneEnabled: PRUNE_ENABLED });
   }
 
   if (path === '/api/issues' && req.method === 'GET') {
@@ -611,6 +647,27 @@ async function handleFleet(req, res, url, user) {
     });
   }
 
+  if (path === '/api/settings' && req.method === 'GET') {
+    const current = await settings.getSettings(user.id);
+    const rows = await store.latestScans(user.id);
+    const last = rows.map((r) => r.started_at).filter(Boolean).sort().pop() ?? null;
+    return sendJson(res, 200, {
+      ...current,
+      lastScanAt: last,
+      // So the UI can say when the next sweep lands rather than only how often.
+      nextScanAt: last && current.scanMinutes > 0 ? new Date(new Date(last).getTime() + current.scanMinutes * 60000).toISOString() : null,
+    });
+  }
+
+  if (path === '/api/settings' && req.method === 'PUT') {
+    const body = await readBody(req);
+    const bad = settings.scanIntervalProblem(body.scanMinutes);
+    if (bad) return sendJson(res, 400, { error: 'invalid_interval', message: bad });
+    const updated = await settings.setScanInterval(user.id, body.scanMinutes);
+    await auth.audit(user.id, user.email, 'settings-updated', 'Scan interval set to ' + (updated.scanMinutes || 'manual only'));
+    return sendJson(res, 200, updated);
+  }
+
   if (path === '/api/scan' && req.method === 'POST') {
     // Deliberately not awaited: a fleet sweep can take minutes, and the browser
     // follows it on the event stream rather than holding a request open.
@@ -683,7 +740,8 @@ async function serveStatic(req, res, url) {
       return;
     }
 
-    const body = await readFile(full);
+    const isHtml = extname(full) === '.html';
+    const body = isHtml ? Buffer.from(versionAssets(await readFile(full, 'utf8')), 'utf8') : await readFile(full);
     res.writeHead(200, {
       'content-type': MIME[extname(full)] ?? 'application/octet-stream',
       'content-length': body.length,
@@ -694,7 +752,7 @@ async function serveStatic(req, res, url) {
   } catch {
     // Unknown paths fall through to the SPA so deep links work on reload.
     if (!extname(rel)) {
-      const shell = await readFile(join(WEB_ROOT, 'index.html'));
+      const shell = Buffer.from(versionAssets(await readFile(join(WEB_ROOT, 'index.html'), 'utf8')), 'utf8');
       res.writeHead(200, { 'content-type': MIME['.html'], 'content-length': shell.length, 'cache-control': 'no-cache' });
       res.end(shell);
       return;
@@ -756,6 +814,8 @@ async function boot() {
   await migrate();
   // Fails loudly at boot rather than on the first server anyone adds.
   verifyKeyAvailable();
+
+  await computeAssetVersion();
 
   await auth.purgeExpiredSessions();
   setInterval(() => auth.purgeExpiredSessions().catch(() => {}), 3600000).unref();

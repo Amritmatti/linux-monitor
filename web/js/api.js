@@ -51,6 +51,7 @@ const mutate = (method) => (path, body) => {
 };
 
 export const post = mutate('POST');
+export const put = mutate('PUT');
 export const patch = mutate('PATCH');
 
 export function del(path) {
@@ -77,6 +78,8 @@ export const api = {
   me: () => get('/api/auth/me', { ttl: 3000 }),
   logout: () => post('/api/auth/logout'),
   changePassword: (body) => post('/api/auth/password', body),
+  settings: () => get('/api/settings', { ttl: 2000 }),
+  updateSettings: (body) => put('/api/settings', body),
 
   fleet: () => get('/api/fleet', { ttl: 2500 }),
   issues: (params) => get('/api/issues' + qs(params), { ttl: 2000 }),

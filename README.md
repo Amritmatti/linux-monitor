@@ -4,10 +4,14 @@
 what is exposed, what is unpatched — and what changed since yesterday that
 nobody meant to change.**
 
-Nothing is installed on the machines it watches. There is no agent, no daemon,
-no cron entry, and no code in this repository that can write a file, install a
-package, restart a unit or open a shell on a monitored host. It connects, runs
-one script that only reads, and disconnects.
+Nothing is installed on the machines it watches. There is no agent, no daemon
+and no cron entry: it connects, runs one script that only reads, and
+disconnects.
+
+It is read-only out of the box. The single exception is Docker cleanup, which is
+**off by default** and, when you switch it on, can run a fixed list of
+`docker ... prune -f` commands and nothing else — see
+[Docker](#docker-and-the-one-write-path).
 
 ```
    you add a server            ← name, IP, login user, private key
@@ -26,7 +30,8 @@ one script that only reads, and disconnects.
         ↓
    critical · warning · info   ← with the measurement behind each one
         ↓
-   YOU run the fix             ← it hands you the command; it never runs it
+   YOU run the fix             ← it hands you the command (Docker cleanup can
+                                 run its own, if you switch that on)
 ```
 
 Multi-user, Postgres-backed, private keys encrypted at rest, **no sample data** —
@@ -41,12 +46,13 @@ the dashboard stays empty until it has your servers.
 3. [Prepare the login (least privilege)](#prepare-the-login-least-privilege)
 4. [What it checks](#what-it-checks)
 5. [Anomalies: normal for *this* machine](#anomalies-normal-for-this-machine)
-6. [Acknowledgements](#acknowledgements)
-7. [Configuration](#configuration)
-8. [Security notes](#security-notes)
-9. [Architecture](#architecture)
-10. [API](#api)
-11. [Tests](#tests)
+6. [Docker, and the one write path](#docker-and-the-one-write-path)
+7. [Acknowledgements](#acknowledgements)
+8. [Configuration](#configuration)
+9. [Security notes](#security-notes)
+10. [Architecture](#architecture)
+11. [API](#api)
+12. [Tests](#tests)
 
 ---
 
@@ -179,6 +185,7 @@ is based on and the command to act on it.
 | **Security** | `PermitRootLogin yes`, `PermitEmptyPasswords yes`, `PasswordAuthentication yes`, failed-login volume |
 | **Platform** | Releases past end of life, where no security patch is coming at all |
 | **Time** | Clock skew against the dashboard, and whether anything is keeping it in sync |
+| **Docker** | Containers stuck in a restart loop, containers that are up but failing their own health check, exited containers piling up, dangling images, and reclaimable space judged against the disk Docker actually sits on |
 
 Severity means something specific:
 
@@ -227,6 +234,69 @@ rather than a confident one from three data points.
 
 ---
 
+## Docker, and the one write path
+
+Where Docker is installed, Vigil reports what is running, what is broken and
+what is dead weight:
+
+| | |
+| --- | --- |
+| **Restart loops** | A container Docker keeps restarting is not untidiness, it is an outage that keeps announcing itself. Critical. |
+| **Unhealthy containers** | Up, so nothing restarted it, but its own health check says it is not working. This is the state that silently serves errors. Critical. |
+| **Exited containers** | Each keeps its writable layer and its logs until removed. Individually small; collectively what fills a build host. |
+| **Dangling images** | Untagged layers left behind when an image was rebuilt under the same tag. |
+| **Reclaimable space** | Taken from `docker system df`, which accounts for layers shared between images — summing image sizes double-counts them, often by gigabytes. |
+
+Reclaimable space is judged **against the filesystem Docker's root directory is
+on**. 30 GB of dead layers is a footnote on a 4 TB volume and an emergency on a
+40 GB root, and a fixed byte threshold cannot tell those apart.
+
+### Cleanup
+
+Every other finding in Vigil hands you a command to run yourself. Docker cleanup
+can also run it for you — but that is a real change to what this product is, so
+it is built to be hard to misuse:
+
+- **Off by default.** `VG_ALLOW_DOCKER_PRUNE=on` is required. A default
+  deployment cannot change anything on any host.
+- **Fixed commands.** The six commands live in a table in `server/ssh/prune.mjs`
+  as constant strings. The API takes an action *key*, looks it up, and runs what
+  it finds. Nothing from a request, a database row or a scan is ever
+  interpolated into a command — the injection surface is not sanitised, it is
+  absent.
+- **Prune only, never targeted.** There is deliberately no "remove this
+  container" verb. `prune` removes only what Docker itself considers unused, so
+  a running service cannot be taken down by a mistake here or by someone
+  guessing an id.
+- **Volumes are separate.** `docker volume prune` deletes *data*, not waste — a
+  database volume whose container is merely stopped looks exactly like an
+  abandoned one. It needs its own second flag (`VG_ALLOW_VOLUME_PRUNE=on`), it
+  is never part of the headline reclaimable figure, and it is never included in
+  the combined action.
+- **Everything is audited**, with the actor, the host and the exact command; and
+  the server is re-scanned immediately afterwards so the page shows what actually
+  changed rather than what you hoped would.
+
+| Action | Command | Deletes data |
+| --- | --- | --- |
+| Remove exited containers | `docker container prune -f` | no |
+| Remove dangling images | `docker image prune -f` | no |
+| Remove all unused images | `docker image prune -a -f` | no |
+| Remove build cache | `docker builder prune -f` | no |
+| All of the above | `docker system prune -f` | no |
+| Remove unused volumes | `docker volume prune -f` | **yes** |
+
+Leave `VG_ALLOW_DOCKER_PRUNE` unset and the cleanup panel still lists every
+action, its size and its exact command — with a Copy button instead of a Run
+button. That is the recommended way to run this.
+
+> **Reaching the Docker socket needs the `docker` group, which is
+> root-equivalent** — anyone in it can start a privileged container and own the
+> host. Vigil does not ask for it. On a host where the login is not in that
+> group, the Docker page says so plainly instead of showing an empty card.
+
+---
+
 ## Acknowledgements
 
 Acknowledging an issue hides it. It is **not a mute**: the acknowledgement
@@ -256,15 +326,20 @@ Everything is an environment variable on the `app` service.
 | `VG_SSH_COMMAND_TIMEOUT_MS` | `45000` | Whole-operation deadline, so a host that connects and then goes silent cannot hold a slot open |
 | `VG_SESSION_DAYS` | `14` | Session lifetime |
 | `VG_SECURE_COOKIES` | `false` | Set `true` behind HTTPS |
+| `VG_ALLOW_DOCKER_PRUNE` | `off` | The only write path. `on` lets the Docker page run the fixed prune list above |
+| `VG_ALLOW_VOLUME_PRUNE` | `off` | Additionally allows `docker volume prune`, which **deletes data** |
 
 ---
 
 ## Security notes
 
-- **No write path.** There is no module, flag or configuration in this repository
-  that can change anything on a monitored host. The probe script in
-  `server/ssh/probe.mjs` is the complete list of commands the product can run, it
-  is fixed at build time, and every one of them reads.
+- **One write path, and it is off by default.** `server/ssh/probe.mjs` is the
+  complete list of commands the scanner can run, it is fixed at build time, and
+  every one of them reads. The only module that can change anything is
+  `server/ssh/prune.mjs`: six constant `docker ... prune -f` strings, gated
+  behind `VG_ALLOW_DOCKER_PRUNE`, unable to target a specific object, and
+  audited. With that variable unset the product cannot alter a monitored host at
+  all.
 - **`apt-get -s` is the simulate flag.** It downloads nothing, installs nothing
   and takes no lock. `dnf -C` reads the local cache and will not touch the
   network.
@@ -298,8 +373,9 @@ server/
   auth/users.mjs       scrypt passwords, hashed session tokens
   repo/servers.mjs     server CRUD; every query scoped by user_id
   ssh/client.mjs       ssh2 transport, host-key pinning, error translation
-  ssh/probe.mjs        THE SCRIPT — every command the product can run
+  ssh/probe.mjs        THE SCRIPT — every command the scanner can run
   ssh/parse.mjs        pure parsers: text in, structure out
+  ssh/prune.mjs        the only write path: a fixed docker-prune allowlist
   engine/checks.mjs    facts -> findings (fixed thresholds)
   engine/anomalies.mjs facts + history -> anomalies (per-host baselines)
   engine/stats.mjs     median, MAD, robust z, Theil-Sen
@@ -341,7 +417,8 @@ All endpoints are cookie-authenticated and scoped to the calling user.
 | `GET` | `/api/fleet` | Servers plus estate totals |
 | `GET` | `/api/issues` | Findings **and** anomalies, with facets; `?severity=&category=&server=&q=&acked=` |
 | `GET` | `/api/anomalies` | Anomalies only |
-| `GET` | `/api/ports` · `/api/updates` · `/api/disks` | Fleet-wide inventories |
+| `GET` | `/api/ports` · `/api/updates` · `/api/disks` · `/api/docker` | Fleet-wide inventories |
+| `POST` | `/api/servers/:id/docker-prune` | Run one allowlisted cleanup action (`403` unless enabled) |
 | `POST` | `/api/scan` | Sweep every server (returns `202`; follow it on the event stream) |
 | `GET` | `/api/events` | Server-sent events: scan progress and completion |
 | `GET` | `/api/health` | Unauthenticated liveness |
@@ -354,14 +431,18 @@ All endpoints are cookie-authenticated and scoped to the calling user.
 npm test
 ```
 
-68 tests, no network and no database required. They cover the two places bugs
+86 tests, no network and no database required. They cover the three places bugs
 actually hide:
 
 - **Parsers**, against verbatim output from Ubuntu, Debian, RHEL and busybox
   hosts — ragged column widths and all. `ss` and `netstat`, mount points with
   spaces, btrfs reporting `-` for inodes, apt and dnf.
-- **Judgement calls**: which conditions are critical rather than warnings, and —
-  roughly half the suite — **what must stay silent**. A healthy server produces
+- **Judgement calls**: which conditions are critical rather than warnings, and -
+  roughly half the suite - **what must stay silent**. A healthy server produces
   zero findings; a database on loopback is not "exposed"; a permanently busy
   build server raises no anomaly while still tripping the fixed rule; a brand new
   server with no history produces no anomalies at all.
+- **The write path**: that every cleanup command is a constant matching a strict
+  shape, that none of them can target a container or an image, that only volume
+  pruning is marked as destroying data, and that all of it is refused outright
+  until it is explicitly enabled.

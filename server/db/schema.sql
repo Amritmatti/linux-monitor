@@ -127,6 +127,16 @@ CREATE TABLE IF NOT EXISTS finding_acks (
 
 CREATE INDEX IF NOT EXISTS finding_acks_user_idx ON finding_acks (user_id);
 
+-- Per-user preferences. Absent means "use the instance default", which is why
+-- there is no row created at sign-up and every read falls back.
+CREATE TABLE IF NOT EXISTS user_settings (
+  user_id       uuid PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  -- Minutes between automatic sweeps. 0 disables them, and scanning becomes
+  -- something a person triggers.
+  scan_minutes  integer NOT NULL DEFAULT 15 CHECK (scan_minutes >= 0 AND scan_minutes <= 1440),
+  updated_at    timestamptz NOT NULL DEFAULT now()
+);
+
 -- Append-only. Nothing in the application ever updates or deletes a row here.
 CREATE TABLE IF NOT EXISTS audit_log (
   id       bigserial PRIMARY KEY,

@@ -20,6 +20,7 @@ import { evaluate, SEVERITY_RANK } from './engine/checks.mjs';
 import { detect } from './engine/anomalies.mjs';
 import { audit } from './auth/users.mjs';
 import { prune as runPrune } from './ssh/prune.mjs';
+import { schedulableUsers } from './repo/settings.mjs';
 
 export const events = new EventEmitter();
 // One listener per connected browser tab; a fleet dashboard left open on a wall
@@ -483,25 +484,46 @@ export async function pruneDocker(userId, serverId, actionKey, { actor }) {
 /* ------------------------------------------------------------------ scheduler */
 
 let timer = null;
+let sweeping = false;
+
+/** How often the scheduler wakes up to see whose turn it is. */
+const TICK_MS = 60000;
 
 /**
- * Periodic sweep of every user's estate.
+ * Whose estate is due a sweep right now.
  *
- * Runs users in sequence rather than in parallel: the concurrency cap that
+ * Each user carries their own interval, so this cannot be a single setInterval.
+ * Instead it wakes once a minute and asks the database who is overdue - which
+ * also means a restart resumes the schedule instead of re-sweeping everything,
+ * because "last swept" is the newest scan row rather than a timer in memory.
+ */
+async function dueUsers() {
+  const rows = await schedulableUsers();
+  const now = Date.now();
+  return rows.filter((r) => {
+    if (!r.scan_minutes || r.scan_minutes <= 0) return false; // sweeping is off for them
+    if (!r.last_scan_at) return true; // never scanned: do it now
+    return now - new Date(r.last_scan_at).getTime() >= r.scan_minutes * 60000;
+  });
+}
+
+/**
+ * Periodic sweep.
+ *
+ * Users are swept in sequence rather than in parallel: the concurrency cap that
  * matters is on outbound SSH connections, and running ten users at once would
  * multiply it by ten.
  */
-export function startScheduler({ minutes = Number(process.env.VG_SCAN_MINUTES || 15) } = {}) {
+export function startScheduler() {
   if (timer) clearInterval(timer);
-  if (!minutes || minutes <= 0) {
-    console.log('[scan] scheduler disabled (VG_SCAN_MINUTES=0)');
-    return;
-  }
 
-  const sweep = async () => {
+  const tick = async () => {
+    // A sweep of a large estate can outlast the tick. Overlapping them would
+    // double the SSH concurrency and, worse, race two scans of the same host.
+    if (sweeping) return;
+    sweeping = true;
     try {
-      const users = await many('SELECT DISTINCT user_id FROM servers WHERE status <> $1', ['disabled']);
-      for (const u of users) {
+      for (const u of await dueUsers()) {
         try {
           await scanAll(u.user_id, { actor: 'scheduler' });
         } catch (err) {
@@ -509,15 +531,17 @@ export function startScheduler({ minutes = Number(process.env.VG_SCAN_MINUTES ||
         }
       }
     } catch (err) {
-      console.error('[scan] sweep failed:', err.message);
+      console.error('[scan] scheduler tick failed:', err.message);
+    } finally {
+      sweeping = false;
     }
   };
 
-  timer = setInterval(sweep, minutes * 60000);
-  console.log('[scan] scheduler running every ' + minutes + ' minutes');
-  // A first sweep shortly after boot, so a restarted container does not leave
-  // the dashboard blank for a quarter of an hour.
-  setTimeout(sweep, 15000).unref?.();
+  timer = setInterval(tick, TICK_MS);
+  console.log('[scan] scheduler ticking every minute; each account keeps its own interval');
+  // A first look shortly after boot, so a restarted container does not leave a
+  // never-scanned server blank until the next minute boundary.
+  setTimeout(tick, 15000).unref?.();
 }
 
 export function stopScheduler() {
