@@ -1,5 +1,5 @@
 /* ==========================================================================
-   FinOps Autopilot - design system
+   Vigil - design system
    Palette roles follow a validated categorical/sequential/status split; every
    colour is declared as a token here so light and dark swap in one place.
    ========================================================================== */
@@ -692,3 +692,111 @@ pre.code .del { color: var(--critical); }
   font-family: var(--mono);
 }
 .region-entry:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-wash); }
+
+
+/* ==========================================================================
+   Vigil additions
+   ========================================================================== */
+
+/* --- severity ------------------------------------------------------------ */
+/* Status colours are reserved: they never double as a series colour, so a red
+   on this page always means the same thing wherever it appears. */
+.sev { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600;
+       padding: 2px 7px 2px 6px; border-radius: 999px; letter-spacing: .01em; white-space: nowrap; }
+.sev i { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+.sev-critical { background: var(--critical-wash); color: var(--critical); }
+.sev-critical i { background: var(--critical); }
+.sev-warning { background: var(--warning-wash); color: #8a6000; }
+:root[data-theme="dark"] .sev-warning { color: var(--warning); }
+.sev-warning i { background: var(--warning); }
+.sev-info { background: var(--accent-wash); color: var(--accent-ink); }
+:root[data-theme="dark"] .sev-info { color: var(--seq-250); }
+.sev-info i { background: var(--accent); }
+.sev-ok { background: var(--good-wash); color: var(--good-text); }
+:root[data-theme="dark"] .sev-ok { color: var(--good); }
+.sev-ok i { background: var(--good); }
+.sev-muted { background: var(--surface-3); color: var(--ink-3); }
+.sev-muted i { background: var(--ink-3); }
+
+/* Left edge of an issue row, so severity is legible before any text is read. */
+.issue-row { border-left: 3px solid transparent; }
+.issue-row.is-critical { border-left-color: var(--critical); }
+.issue-row.is-warning { border-left-color: var(--warning); }
+.issue-row.is-info { border-left-color: var(--accent); }
+.issue-row.is-acked { opacity: .55; }
+
+/* --- usage meters -------------------------------------------------------- */
+.meter { display: flex; align-items: center; gap: 8px; min-width: 130px; }
+.meter-track { flex: 1; height: 6px; border-radius: 999px; background: var(--surface-3); overflow: hidden; min-width: 54px; }
+.meter-fill { height: 100%; border-radius: 999px; background: var(--good); transition: width .3s ease; }
+.meter-fill.warning { background: var(--warning); }
+.meter-fill.critical { background: var(--critical); }
+.meter-value { font-variant-numeric: tabular-nums; font-size: 11.5px; color: var(--ink-2); min-width: 34px; text-align: right; }
+
+/* --- ports --------------------------------------------------------------- */
+.port { display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 11.5px;
+        padding: 2px 7px; border-radius: var(--radius-sm); background: var(--surface-3); color: var(--ink-2); }
+.port.is-exposed { background: var(--warning-wash); color: #8a6000; }
+:root[data-theme="dark"] .port.is-exposed { color: var(--warning); }
+.port.is-risky { background: var(--critical-wash); color: var(--critical); font-weight: 600; }
+.port-grid { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* --- code / commands ----------------------------------------------------- */
+.code { font-family: var(--mono); font-size: 11.5px; line-height: 1.65; background: var(--surface-3);
+        border: 1px solid var(--hairline); border-radius: var(--radius-sm); padding: 9px 11px;
+        white-space: pre-wrap; word-break: break-word; color: var(--ink-2); overflow-x: auto; }
+.code-copy { display: flex; align-items: flex-start; gap: 8px; }
+.code-copy .code { flex: 1; }
+.fp { font-family: var(--mono); font-size: 11px; color: var(--ink-3); word-break: break-all; }
+
+/* --- evidence ------------------------------------------------------------ */
+.evidence { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px;
+            background: var(--hairline); border: 1px solid var(--hairline); border-radius: var(--radius-sm); overflow: hidden; }
+.evidence > div { background: var(--surface-1); padding: 9px 11px; }
+.evidence dt { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-3); margin-bottom: 3px; }
+.evidence dd { font-size: 12.5px; color: var(--ink); font-variant-numeric: tabular-nums; }
+
+/* --- sparkline ----------------------------------------------------------- */
+.spark { display: block; width: 100%; height: 42px; overflow: visible; }
+.spark path { vector-effect: non-scaling-stroke; }
+
+/* --- forms --------------------------------------------------------------- */
+.form-grid { display: grid; gap: 13px; }
+.form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 13px; }
+.field label { display: block; font-size: 11.5px; font-weight: 550; color: var(--ink-2); margin-bottom: 5px; }
+.field input, .field textarea, .field select {
+  width: 100%; padding: 9px 11px; border: 1px solid var(--hairline); border-radius: var(--radius-sm);
+  background: var(--surface-1); color: var(--ink); font-size: 13px; outline: none; font-family: inherit; }
+.field textarea { font-family: var(--mono); font-size: 11.5px; line-height: 1.5; resize: vertical; min-height: 132px; }
+.field input:focus, .field textarea:focus, .field select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-wash); }
+.field .hint { font-size: 11px; color: var(--ink-3); margin-top: 5px; line-height: 1.5; }
+.field-error { font-size: 11.5px; color: var(--critical); margin-top: 5px; }
+
+/* --- server cards -------------------------------------------------------- */
+.srv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(268px, 1fr)); gap: 13px; }
+.srv-card { display: block; padding: 15px; border: 1px solid var(--hairline); border-radius: var(--radius);
+            background: var(--surface-1); text-decoration: none; color: inherit; transition: border-color .15s ease, transform .15s ease; }
+.srv-card:hover { border-color: var(--hairline-strong); transform: translateY(-1px); }
+.srv-card h4 { font-size: 13.5px; margin: 0 0 2px; letter-spacing: -.01em; }
+.srv-card .host { font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
+.srv-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 13px; }
+.srv-metric span { display: block; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-3); margin-bottom: 3px; }
+.srv-metric b { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* --- misc ---------------------------------------------------------------- */
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 7px 15px; font-size: 12.5px; }
+.kv dt { color: var(--ink-3); white-space: nowrap; }
+.kv dd { color: var(--ink); text-align: right; font-variant-numeric: tabular-nums; }
+.stale-flag { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--warning); }
+.limited-note { font-size: 12px; color: var(--ink-2); line-height: 1.6; }
+.limited-note + .limited-note { margin-top: 9px; }
+
+/* --- filter bar ---------------------------------------------------------- */
+.filter-bar { display: flex; flex-direction: column; gap: 9px; padding: 13px 15px; background: var(--surface-1);
+              border: 1px solid var(--hairline); border-radius: var(--radius); }
+.filter-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+
+/* --- drawer sections ----------------------------------------------------- */
+.drawer-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+.section-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-3);
+                 font-weight: 600; margin: 0 0 8px; }

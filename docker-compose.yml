@@ -1,0 +1,71 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: vigil-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${PGUSER:-vigil}
+      POSTGRES_PASSWORD: ${PGPASSWORD:-vigil}
+      POSTGRES_DB: ${PGDATABASE:-vigil}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PGUSER:-vigil} -d ${PGDATABASE:-vigil}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    # Not published by default: nothing outside the compose network needs it.
+    # Uncomment to inspect the database with a local client.
+    # ports:
+    #   - "5432:5432"
+
+  app:
+    build: .
+    image: vigil:latest
+    container_name: vigil
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      # Override the host port when 8080 is already taken: VG_PORT=8090 docker compose up -d
+      - "${VG_PORT:-8080}:8080"
+    environment:
+      DATABASE_URL: postgres://${PGUSER:-vigil}:${PGPASSWORD:-vigil}@postgres:5432/${PGDATABASE:-vigil}
+
+      # ---- credential encryption -----------------------------------------
+      # 32 bytes, base64. Generate with:
+      #   openssl rand -base64 32
+      # Leave unset and the app generates one into the data volume, printing a
+      # warning. Set it from your secret manager in production: a key on the
+      # same volume as the data it protects is convenience, not security.
+      VG_ENCRYPTION_KEY: ${VG_ENCRYPTION_KEY:-}
+
+      # ---- behaviour -------------------------------------------------------
+      # Set to "off" to close public sign-up once your accounts exist.
+      VG_ALLOW_SIGNUP: ${VG_ALLOW_SIGNUP:-on}
+      # Minutes between automatic sweeps of every server. 0 disables them, and
+      # scanning becomes something you trigger from the dashboard.
+      VG_SCAN_MINUTES: ${VG_SCAN_MINUTES:-15}
+      # How many servers to hold SSH connections to at once.
+      VG_SCAN_CONCURRENCY: ${VG_SCAN_CONCURRENCY:-8}
+      # Scans kept per server. At the default interval, 2000 is about three weeks
+      # of history - which is what the anomaly engine draws its baselines from.
+      VG_SCAN_RETENTION: ${VG_SCAN_RETENTION:-2000}
+      # Give up on a host that has not completed the handshake / the probe.
+      VG_SSH_CONNECT_TIMEOUT_MS: ${VG_SSH_CONNECT_TIMEOUT_MS:-12000}
+      VG_SSH_COMMAND_TIMEOUT_MS: ${VG_SSH_COMMAND_TIMEOUT_MS:-45000}
+      # Set true when serving over HTTPS so the session cookie is Secure.
+      VG_SECURE_COOKIES: ${VG_SECURE_COOKIES:-false}
+    volumes:
+      - vigil-data:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 20s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+
+volumes:
+  postgres-data:
+  vigil-data:

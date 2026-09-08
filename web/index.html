@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark light" />
+    <title>Vigil</title>
+    <meta name="description" content="Agentless Linux server anomaly detection: critical issues, exposed ports, pending security updates, disks about to fill, and whatever changed since yesterday." />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232a78d6'/%3E%3Cpath d='M6 17h4l2.5-6 3.5 11 3-8 2 3h5' stroke='white' stroke-width='2.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="/css/app.css" />
+  </head>
+  <body>
+    <div id="app" class="app">
+      <aside class="sidebar" id="sidebar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 32 32" width="28" height="28"><rect width="32" height="32" rx="8" fill="var(--accent)"></rect><path d="M6 17h4l2.5-6 3.5 11 3-8 2 3h5" stroke="#fff" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+          </span>
+          <span class="brand-text">
+            <strong>Vigil</strong>
+            <small id="brand-sub">Linux fleet</small>
+          </span>
+        </div>
+
+        <nav class="nav" id="nav" aria-label="Primary"></nav>
+
+        <div class="sidebar-foot">
+          <div id="user-card"></div>
+          <p class="live-row"><span class="dot dot-live" id="live-dot" title="Live connection"></span>Read-only &middot; agentless</p>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <button class="icon-btn only-mobile" id="menu-btn" aria-label="Toggle navigation">
+            <svg viewBox="0 0 24 24" width="18" height="18"><path d="M3 6h18M3 12h18M3 18h18" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></svg>
+          </button>
+          <div class="topbar-title">
+            <h1 id="page-title">Overview</h1>
+            <p id="page-subtitle">Loading&hellip;</p>
+          </div>
+          <div class="topbar-actions">
+            <div class="search-wrap">
+              <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2" fill="none" /><path d="M20 20l-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></svg>
+              <input type="search" id="global-search" placeholder="Search issues, servers, ports" autocomplete="off" />
+            </div>
+            <button class="btn btn-sm" id="scan-btn" title="Connect to every server now and re-collect">
+              <svg viewBox="0 0 20 20" width="14" height="14"><path d="M16.5 10a6.5 6.5 0 01-11.1 4.6M3.5 10a6.5 6.5 0 0111.1-4.6" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round"/><path d="M14.6 2.6v3h-3M5.4 17.4v-3h3" stroke="currentColor" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              Scan now
+            </button>
+            <button class="icon-btn" id="theme-btn" aria-label="Switch theme" title="Switch theme">
+              <svg viewBox="0 0 24 24" width="17" height="17" class="icon-moon"><path d="M20 14.5A8.5 8.5 0 019.5 4a8.5 8.5 0 1010.5 10.5z" fill="currentColor" /></svg>
+              <svg viewBox="0 0 24 24" width="17" height="17" class="icon-sun"><circle cx="12" cy="12" r="4.5" fill="currentColor" /><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M19.1 4.9l-1.8 1.8M6.7 17.3l-1.8 1.8" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></svg>
+            </button>
+          </div>
+        </header>
+
+        <div id="banner"></div>
+        <div class="view" id="view" tabindex="-1"></div>
+      </main>
+
+      <div class="drawer-scrim" id="drawer-scrim" hidden></div>
+      <section class="drawer" id="drawer" hidden aria-label="Detail"></section>
+      <div class="toasts" id="toasts" aria-live="polite"></div>
+    </div>
+
+    <script type="module" src="/js/main.js"></script>
+  </body>
+</html>
