@@ -121,6 +121,49 @@ const SCRIPT = [
   'S dockerimages; docker images -a --format "{{.ID}}\t{{.Repository}}\t{{.Tag}}\t{{.Size}}\t{{.CreatedAt}}" 2>/dev/null | head -400',
   'S dockervolumes; docker volume ls --format "{{.Name}}\t{{.Driver}}" 2>/dev/null | head -300',
   'S dockervolumesdangling; docker volume ls -q --filter dangling=true 2>/dev/null | head -300',
+
+  /* ---- hardening: firewall and mandatory access control ---- */
+  // Most of these need root and will simply come back empty for an
+  // unprivileged login. That is reported as unknown, never as "no firewall".
+  "S fwufw; ufw status verbose 2>/dev/null | head -25",
+  "S fwfirewalld; firewall-cmd --state 2>/dev/null; firewall-cmd --list-all 2>/dev/null | head -30",
+  "S fwnft; nft list ruleset 2>/dev/null | head -60",
+  "S fwiptables; iptables -S 2>/dev/null | head -60",
+  "S macinstalled; (command -v getenforce >/dev/null 2>&1 && echo selinux); (command -v aa-status >/dev/null 2>&1 && echo apparmor)",
+  "S selinux; getenforce 2>/dev/null",
+  "S apparmor; (aa-status --enabled >/dev/null 2>&1 && echo enabled) || aa-status 2>/dev/null | head -3",
+
+  /* ---- hardening: privilege ---- */
+  // /etc/passwd is world readable by design; /etc/shadow is not, and asking
+  // for its MODE rather than its contents is the whole point - this probe
+  // never reads a hash or a secret, only the permissions guarding one.
+  "S accounts; awk -F: '{print $1\":\"$3\":\"$4\":\"$7}' /etc/passwd 2>/dev/null | head -300",
+  "S privgroups; for g in sudo wheel admin adm docker; do getent group $g 2>/dev/null; done",
+  "S sudolist; sudo -n -l 2>/dev/null | head -25",
+  "S sudoersd; ls -l /etc/sudoers.d 2>/dev/null | head -30",
+  "S fileperms; for f in /etc/shadow /etc/gshadow /etc/passwd /etc/group /etc/sudoers /etc/ssh/sshd_config /etc/crontab /etc/environment; do [ -e \"$f\" ] && stat -c '%n %a %U %G' \"$f\" 2>/dev/null; done",
+
+  /* ---- hardening: filesystem ---- */
+  // Two bounded walks, pruned and time-limited. `find /` on a large
+  // filesystem is the one thing in this probe that could take minutes, so it
+  // is capped and allowed to return partial results rather than hang a scan.
+  "S findlimited; if command -v timeout >/dev/null 2>&1; then echo yes; else echo no; fi",
+  "S suidsgid; T=\"\"; command -v timeout >/dev/null 2>&1 && T=\"timeout 10\"; $T find / -xdev \\( -path /proc -o -path /sys -o -path /dev -o -path /run -o -path /snap -o -path /var/lib/docker -o -path /var/lib/containers \\) -prune -o \\( -perm -4000 -o -perm -2000 \\) -type f -print 2>/dev/null | head -300 | xargs -r stat -c '%a %n' 2>/dev/null",
+  "S worldwritable; T=\"\"; command -v timeout >/dev/null 2>&1 && T=\"timeout 10\"; $T find / -xdev \\( -path /proc -o -path /sys -o -path /dev -o -path /run -o -path /snap -o -path /var/lib/docker -o -path /var/lib/containers \\) -prune -o -perm -0002 \\( -type f -o -type d \\) -print 2>/dev/null | head -200 | xargs -r stat -c '%a %F %n' 2>/dev/null",
+
+  /* ---- hardening: scheduled jobs ---- */
+  "S cronfiles; ls -l /etc/cron.d /etc/cron.daily /etc/cron.hourly /etc/cron.weekly /etc/cron.monthly 2>/dev/null | head -100",
+  "S crontabuser; crontab -l 2>/dev/null | grep -v '^#' | head -25",
+
+  /* ---- hardening: exposed secrets ---- */
+  // PATHS AND PERMISSIONS ONLY. Nothing here opens one of these files: the
+  // finding is that a credential file is world readable, and shipping its
+  // contents to a dashboard to prove it would be the same mistake, twice.
+  "S secretperms; for f in \"$HOME/.aws/credentials\" \"$HOME/.ssh/id_rsa\" \"$HOME/.ssh/id_ed25519\" \"$HOME/.ssh/id_ecdsa\" \"$HOME/.netrc\" \"$HOME/.pgpass\"; do [ -e \"$f\" ] && stat -c '%n %a %U' \"$f\" 2>/dev/null; done",
+  "S secretworld; T=\"\"; command -v timeout >/dev/null 2>&1 && T=\"timeout 8\"; $T find /etc /opt /srv /home /var/www -xdev -maxdepth 5 -type f \\( -name '*.env' -o -name '.env' -o -name 'credentials' -o -name '*.pem' -o -name 'id_rsa' -o -name '*.key' \\) -perm -0004 -print 2>/dev/null | head -60",
+
+  /* ---- hardening: container posture ---- */
+  "S dockerinspect; docker ps -q 2>/dev/null | head -60 | xargs -r docker inspect --format '{{.Name}}|{{.HostConfig.Privileged}}|{{.Config.User}}|{{range .Mounts}}{{.Source}}>{{.Destination}};{{end}}|{{range .HostConfig.CapAdd}}{{.}};{{end}}|{{.HostConfig.ReadonlyRootfs}}' 2>/dev/null | head -60",
 ].join('\n');
 
 /** Human labels for the checks that can degrade, used by the UI. */
@@ -136,6 +179,8 @@ export const LIMITED_REASONS = {
   'failed-units': 'Failed systemd units. This host does not run systemd, or systemctl is unavailable to this user.',
   'disks': 'Filesystem usage. df returned nothing usable.',
   'ports': 'Listening sockets. Neither ss nor netstat is installed.',
+  firewall:
+    'Host firewall state. ufw, firewalld and iptables all refuse to report to an ordinary user, so whether this host filters anything locally is unknown rather than absent.',
   docker:
     'Docker containers, images and reclaimable space. The daemon refused this login. That is the expected result of running Vigil unprivileged, ' +
     'because reaching the Docker socket is root-equivalent - so it is opt-in rather than assumed.',
@@ -149,6 +194,7 @@ export const LIMITED_FIX = {
   'port-process-names': '<user> ALL=(root) NOPASSWD: /usr/bin/ss -H -tuln -p',
   'auth-failures': '<user> ALL=(root) NOPASSWD: /usr/bin/journalctl -q --since -24?hours -t sshd',
   'sshd-effective': '<user> ALL=(root) NOPASSWD: /usr/sbin/sshd -T',
+  firewall: '<user> ALL=(root) NOPASSWD: /usr/sbin/ufw status verbose, /usr/bin/firewall-cmd --list-all',
   // A group, not a sudo rule - and a root-equivalent one. Spelled out here
   // so nobody grants it casually to make a dashboard card fill in.
   docker: 'usermod -aG docker <user>   # root-equivalent: grant deliberately',
@@ -163,6 +209,82 @@ const num = (v) => {
   const n = Number(s);
   return Number.isFinite(n) ? n : null;
 };
+
+/**
+ * Hardening posture.
+ *
+ * Every field here can be null, and null means "we could not look", not "it is
+ * fine". Most of these need root and Vigil is designed to run without it, so
+ * the unknowns are the normal case and the engine treats them as such.
+ */
+function assembleHardening(s, limited) {
+  const firewall = p.parseFirewall({ ufw: s.fwufw, firewalld: s.fwfirewalld, nft: s.fwnft, iptables: s.fwiptables });
+  if (!firewall.readable) limited.push('firewall');
+
+  const macInstalled = (s.macinstalled || '').split('\n').map((x) => x.trim()).filter(Boolean);
+  const selinux = (s.selinux || '').trim() || null;
+  const apparmorRaw = (s.apparmor || '').trim();
+  const apparmor = apparmorRaw ? (/^enabled$/i.test(apparmorRaw) || /profiles are loaded/i.test(apparmorRaw) ? 'enabled' : 'disabled') : null;
+
+  const groups = p.parseGroups(s.privgroups) ?? {};
+  const sudoText = s.sudolist ?? '';
+  const sudoReadable = Boolean(sudoText.trim());
+
+  const permissions = p.parseStatLines(s.fileperms) ?? {};
+  const secretStats = p.parseStatLines(s.secretperms) ?? {};
+
+  const cronFiles = [];
+  for (const line of (s.cronfiles || '').split('\n')) {
+    // `ls -l` output, with the directory headers ("/etc/cron.d:") skipped.
+    const m = line.match(/^([-d])([rwxsStT-]{9})\s+\d+\s+(\S+)\s+(\S+)\s+\d+\s+.+?\s(\S+)$/);
+    if (!m || m[1] === 'd') continue;
+    const perms = m[2];
+    cronFiles.push({
+      path: m[5],
+      mode: perms,
+      owner: m[3],
+      group: m[4],
+      groupWritable: perms[4] === 'w',
+      worldWritable: perms[7] === 'w',
+    });
+  }
+
+  const worldReadableSecrets = (s.secretworld || '').split('\n').map((x) => x.trim()).filter(Boolean);
+
+  const suid = p.parseSuid(s.suidsgid);
+  const worldWritable = p.parseWorldWritable(s.worldwritable);
+  // Only meaningful when the daemon actually answered. An empty section from
+  // a host that refused us must stay null, or "0 containers inspected"
+  // reads as a clean bill of health for a host nobody could look at.
+  const containers = s.dockersrc === 'ok' ? p.parseContainerPosture(s.dockerinspect) ?? [] : null;
+
+  return {
+    firewall,
+    mac: { selinux, apparmor, installed: macInstalled },
+    accounts: p.parseAccounts(s.accounts),
+    groups,
+    sudo: {
+      readable: sudoReadable,
+      // `sudo -n -l` prints the rules for the calling user when it can do so
+      // without a password. Anything short of that is simply unknown.
+      nopasswdAll: sudoReadable ? /\(ALL(\s*:\s*ALL)?\)\s*NOPASSWD:\s*ALL/i.test(sudoText) : null,
+      rules: sudoReadable ? sudoText.split('\n').filter((l) => /^\s+\(/.test(l)).map((l) => l.trim()).slice(0, 10) : [],
+    },
+    permissions,
+    suid,
+    worldWritable,
+    cron: { files: cronFiles, userJobs: (s.crontabuser || '').split('\n').filter((l) => l.trim()).length },
+    secrets: {
+      sensitive: Object.values(secretStats),
+      worldReadable: worldReadableSecrets.slice(0, 60),
+    },
+    containers,
+    // The two filesystem walks are time-limited, so a very large host may
+    // return a partial list. Saying so is the difference between "clean" and
+    // "we ran out of time".
+    scanLimited: s.findlimited === 'no',
+  };
+}
 
 /**
  * Docker inventory.
@@ -350,6 +472,9 @@ export function assembleFacts(stdout, { durationMs = 0 } = {}) {
   /* ---- docker ---- */
   const docker = assembleDocker(s, limited);
 
+  /* ---- hardening ---- */
+  const hardening = assembleHardening(s, limited);
+
   const facts = {
     collectedAt: new Date().toISOString(),
     durationMs,
@@ -381,6 +506,7 @@ export function assembleFacts(stdout, { durationMs = 0 } = {}) {
     processes,
     time: { ntpSynchronized: s.ntp === 'yes' ? true : s.ntp === 'no' ? false : null, skewSeconds },
     docker,
+    hardening,
   };
 
   return { facts, limited: [...new Set(limited)] };

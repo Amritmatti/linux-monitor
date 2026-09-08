@@ -17,6 +17,7 @@ import { one, many, query } from './db/pool.mjs';
 import * as repo from './repo/servers.mjs';
 import { collect } from './ssh/probe.mjs';
 import { evaluate, SEVERITY_RANK } from './engine/checks.mjs';
+import { audit as auditHardening } from './engine/hardening.mjs';
 import { detect } from './engine/anomalies.mjs';
 import { audit } from './auth/users.mjs';
 import { prune as runPrune } from './ssh/prune.mjs';
@@ -84,7 +85,12 @@ export async function scanServer(userId, serverId, { actor = 'scheduler' } = {})
   let findings = [];
   let anomalies = [];
   if (facts) {
-    findings = evaluate(facts);
+    // Health findings and hardening findings share one list: to whoever is
+    // triaging, "this disk is full" and "this key is world-readable" are both
+    // just things wrong with the server.
+    findings = [...evaluate(facts), ...auditHardening(facts)].sort(
+      (a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] || String(a.category).localeCompare(String(b.category))
+    );
     const history = await historyFacts(userId, serverId, HISTORY_WINDOW);
     anomalies = detect(facts, history);
   }

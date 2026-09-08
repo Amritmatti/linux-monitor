@@ -576,3 +576,174 @@ export function parseDockerVolumes(text) {
   }
   return out;
 }
+
+/* ------------------------------------------------------------------ hardening */
+
+/** `stat -c '%n %a %U %G'` lines -> { path: {mode, owner, group} }. */
+export function parseStatLines(text) {
+  if (!nonEmpty(text)) return null;
+  const out = {};
+  for (const line of text.split('\n')) {
+    const p = line.trim().split(/\s+/);
+    if (p.length < 2) continue;
+    out[p[0]] = { path: p[0], mode: p[1], owner: p[2] ?? null, group: p[3] ?? null };
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+/**
+ * `stat -c '%a %n'` over the SUID/SGID walk.
+ *
+ * The mode is what separates the two: 4xxx runs as the file's owner, 2xxx as
+ * its group. Both matter, and conflating them loses the distinction between
+ * "becomes root" and "becomes the shadow group".
+ */
+export function parseSuid(text) {
+  if (text === null || text === undefined) return null;
+  const out = [];
+  for (const line of String(text).split('\n')) {
+    const m = line.trim().match(/^(\d{4})\s+(.+)$/);
+    if (!m) continue;
+    const special = Number(m[1][0]);
+    out.push({
+      mode: m[1],
+      path: m[2],
+      // A file can be both; setuid is the more serious half, so it wins the label.
+      kind: special & 4 ? 'suid' : special & 2 ? 'sgid' : 'other',
+    });
+  }
+  return out;
+}
+
+/** `stat -c '%a %F %n'` over the world-writable walk. */
+export function parseWorldWritable(text) {
+  if (text === null || text === undefined) return null;
+  const files = [];
+  const dirs = [];
+  for (const line of String(text).split('\n')) {
+    const m = line.trim().match(/^(\d{3,4})\s+(regular empty file|regular file|directory|symbolic link)\s+(.+)$/);
+    if (!m) continue;
+    const [, mode, kind, path] = m;
+    // A sticky world-writable directory is /tmp working as designed: anyone may
+    // create, only the owner may delete. Reporting it would bury the ones that
+    // are actually dangerous.
+    const sticky = mode.length === 4 && Number(mode[0]) & 1;
+    if (kind === 'directory') {
+      if (!sticky) dirs.push({ mode, path });
+    } else if (kind !== 'symbolic link') {
+      files.push({ mode, path });
+    }
+  }
+  return { files, dirs };
+}
+
+/** `awk -F: '{print $1":"$3":"$4":"$7}' /etc/passwd`. */
+export function parseAccounts(text) {
+  if (!nonEmpty(text)) return null;
+  const out = [];
+  for (const line of text.split('\n')) {
+    const p = line.trim().split(':');
+    if (p.length < 4) continue;
+    const uid = Number(p[1]);
+    if (!Number.isFinite(uid)) continue;
+    const shell = p[3] || '';
+    out.push({
+      name: p[0],
+      uid,
+      gid: Number(p[2]),
+      shell,
+      // nologin and false are how a service account is denied a session; an
+      // account with a real shell can be logged into if its credential leaks.
+      canLogin: !/(nologin|\/false|\/sync)$/.test(shell) && shell !== '',
+    });
+  }
+  return out;
+}
+
+/** `getent group` lines -> { groupName: [members] }. */
+export function parseGroups(text) {
+  if (!nonEmpty(text)) return null;
+  const out = {};
+  for (const line of text.split('\n')) {
+    const p = line.trim().split(':');
+    if (p.length < 4) continue;
+    out[p[0]] = p[3] ? p[3].split(',').filter(Boolean) : [];
+  }
+  return out;
+}
+
+/**
+ * Firewall state, from whichever tool answered.
+ *
+ * All four need root to report anything useful, so "no output" is unknown and
+ * must never be rendered as "no firewall" - the difference between those two is
+ * the difference between a finding and a lie.
+ */
+export function parseFirewall({ ufw, firewalld, nft, iptables }) {
+  if (nonEmpty(ufw)) {
+    const active = /Status:\s*active/i.test(ufw);
+    const def = ufw.match(/Default:\s*([a-z]+)\s*\(incoming\)/i);
+    return {
+      tool: 'ufw',
+      active,
+      readable: true,
+      defaultInbound: def ? def[1].toLowerCase() : null,
+      rules: ufw.split('\n').filter((l) => /\bALLOW\b|\bDENY\b|\bREJECT\b/.test(l)).length,
+    };
+  }
+  if (nonEmpty(firewalld)) {
+    const active = /^\s*running\s*$/im.test(firewalld);
+    const target = firewalld.match(/target:\s*(\S+)/i);
+    return {
+      tool: 'firewalld',
+      active,
+      readable: true,
+      defaultInbound: target ? (/(default|DROP|REJECT)/i.test(target[1]) ? 'deny' : 'allow') : null,
+      rules: (firewalld.match(/services:|ports:/gi) || []).length,
+    };
+  }
+  if (nonEmpty(nft)) {
+    const policyDrop = /type filter hook input priority \d+; policy drop/i.test(nft);
+    return { tool: 'nftables', active: true, readable: true, defaultInbound: policyDrop ? 'deny' : 'allow', rules: nft.split('\n').length };
+  }
+  if (nonEmpty(iptables)) {
+    const inputPolicy = iptables.match(/^-P INPUT (\w+)/im);
+    const rules = iptables.split('\n').filter((l) => l.startsWith('-A')).length;
+    return {
+      tool: 'iptables',
+      // A default-ACCEPT INPUT chain with no rules is an unconfigured firewall,
+      // not a permissive one, and saying "active" would be generous to the
+      // point of dishonest.
+      active: rules > 0 || (inputPolicy && inputPolicy[1] !== 'ACCEPT'),
+      readable: true,
+      defaultInbound: inputPolicy ? (inputPolicy[1] === 'ACCEPT' ? 'allow' : 'deny') : null,
+      rules,
+    };
+  }
+  return { tool: null, active: null, readable: false, defaultInbound: null, rules: 0 };
+}
+
+/** `docker inspect --format` pipe-separated container posture. */
+export function parseContainerPosture(text) {
+  if (text === null || text === undefined) return null;
+  const out = [];
+  for (const line of String(text).split('\n')) {
+    if (!line.trim()) continue;
+    const p = line.split('|');
+    if (p.length < 5) continue;
+    const mounts = (p[3] || '').split(';').filter(Boolean).map((m) => {
+      const [source, destination] = m.split('>');
+      return { source, destination };
+    });
+    out.push({
+      name: p[0].replace(/^\//, ''),
+      privileged: p[1] === 'true',
+      // Empty means the image's default, which for most images is root.
+      user: (p[2] || '').trim() || null,
+      mounts,
+      capAdd: (p[4] || '').split(';').filter(Boolean),
+      readonlyRootfs: p[5] === 'true',
+    });
+  }
+  return out;
+}

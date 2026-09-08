@@ -21,6 +21,7 @@ import * as store from './store.mjs';
 import { LIMITED_REASONS, LIMITED_FIX } from './ssh/probe.mjs';
 import { RISKY_PORTS, THRESHOLDS } from './engine/checks.mjs';
 import { availableActions, PRUNE_ACTIONS, PRUNE_ENABLED } from './ssh/prune.mjs';
+import { AREAS, coverage } from './engine/hardening.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const WEB_ROOT = join(__dirname, '..', 'web');
@@ -643,6 +644,47 @@ async function handleFleet(req, res, url, user) {
         unhealthy: items.reduce((a, i) => a + i.containers.unhealthy, 0),
         danglingImages: items.reduce((a, i) => a + i.images.dangling, 0),
         danglingVolumes: items.reduce((a, i) => a + i.volumes.dangling, 0),
+      },
+    });
+  }
+
+  if (path === '/api/hardening' && req.method === 'GET') {
+    const inv = await store.inventory(user.id);
+    const { findings } = await store.fleet(user.id);
+    const hardening = findings.filter((f) => f.area);
+
+    // Coverage per server, then rolled up per area: an area is only "checked"
+    // across the estate if it was checked everywhere, because one unreadable
+    // host is exactly the one somebody will forget about.
+    const perServer = inv.map((e) => ({ serverId: e.serverId, serverName: e.serverName, areas: coverage(e.facts) }));
+    const areas = AREAS.map((area) => {
+      const states = perServer.map((sv) => sv.areas.find((a) => a.id === area.id)).filter(Boolean);
+      const open = hardening.filter((f) => f.area === area.id && !f.acked);
+      const unknownOn = states.filter((st) => st.state === 'unknown').length;
+      return {
+        ...area,
+        critical: open.filter((f) => f.severity === 'critical').length,
+        warning: open.filter((f) => f.severity === 'warning').length,
+        info: open.filter((f) => f.severity === 'info').length,
+        checkedOn: states.filter((st) => st.state === 'checked').length,
+        partialOn: states.filter((st) => st.state === 'partial').length,
+        unknownOn,
+        notApplicableOn: states.filter((st) => st.state === 'not-applicable').length,
+        servers: states.length,
+        notes: [...new Set(states.map((st) => st.note))].slice(0, 4),
+      };
+    });
+
+    return sendJson(res, 200, {
+      areas,
+      findings: hardening,
+      perServer,
+      totals: {
+        servers: perServer.length,
+        critical: hardening.filter((f) => f.severity === 'critical' && !f.acked).length,
+        warning: hardening.filter((f) => f.severity === 'warning' && !f.acked).length,
+        info: hardening.filter((f) => f.severity === 'info' && !f.acked).length,
+        unknownAreas: areas.filter((a) => a.unknownOn > 0).length,
       },
     });
   }

@@ -88,6 +88,7 @@ export const api = {
   updates: () => get('/api/updates', { ttl: 5000 }),
   disks: () => get('/api/disks', { ttl: 5000 }),
   docker: () => get('/api/docker', { ttl: 5000 }),
+  hardening: () => get('/api/hardening', { ttl: 5000 }),
 
   servers: () => get('/api/servers', { ttl: 2000 }),
   server: (id) => get('/api/servers/' + encodeURIComponent(id), { ttl: 1500 }),

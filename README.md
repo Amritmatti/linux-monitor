@@ -46,13 +46,14 @@ the dashboard stays empty until it has your servers.
 3. [Prepare the login (least privilege)](#prepare-the-login-least-privilege)
 4. [What it checks](#what-it-checks)
 5. [Anomalies: normal for *this* machine](#anomalies-normal-for-this-machine)
-6. [Docker, and the one write path](#docker-and-the-one-write-path)
-7. [Acknowledgements](#acknowledgements)
-8. [Configuration](#configuration)
-9. [Security notes](#security-notes)
-10. [Architecture](#architecture)
-11. [API](#api)
-12. [Tests](#tests)
+6. [Hardening audit](#hardening-audit)
+7. [Docker, and the one write path](#docker-and-the-one-write-path)
+8. [Acknowledgements](#acknowledgements)
+9. [Configuration](#configuration)
+10. [Security notes](#security-notes)
+11. [Architecture](#architecture)
+12. [API](#api)
+13. [Tests](#tests)
 
 ---
 
@@ -84,6 +85,10 @@ docker compose down -v         # stop and wipe database + encryption key
 
 Two containers: `app` (Node, two dependencies) and `postgres` (17-alpine).
 Postgres is not published to the host by default.
+
+How often it scans is set per account on the **Account** page — anything from
+every 5 minutes to once a day, or never, if you would rather press *Scan now*
+yourself. `VG_SCAN_MINUTES` is only the default a new account starts from.
 
 ---
 
@@ -187,6 +192,11 @@ is based on and the command to act on it.
 | **Time** | Clock skew against the dashboard, and whether anything is keeping it in sync |
 | **Docker** | Containers stuck in a restart loop, containers that are up but failing their own health check, exited containers piling up, dangling images, and reclaimable space judged against the disk Docker actually sits on |
 
+Alongside these, a separate [hardening audit](#hardening-audit) covers the
+standard Linux exposure classes — SUID binaries, sudo and group privilege,
+firewall state, file permissions, exposed secrets, container escape routes and
+mandatory access control.
+
 Severity means something specific:
 
 - **critical** — acting today is cheaper than acting tomorrow. Something is
@@ -231,6 +241,61 @@ progressively harder to alert on. Exactly backwards.
 
 With fewer than 8 scans behind a host, the anomaly engine returns **no opinion**
 rather than a confident one from three data points.
+
+---
+
+## Hardening audit
+
+A second engine answers a different question from the health checks: not *is
+this machine working* but **is it defensible**. It walks the standard Linux
+exposure classes and reports each one with the command that fixes it.
+
+| # | Area | What Vigil looks at |
+| --- | --- | --- |
+| 1 | **Patching** | Pending updates, and which are security updates — plus whether the package lists are stale enough to make those counts a floor |
+| 2 | **SSH exposure** | Root login, password auth, public-key auth turned *off*, protocol 1 — and the combination that actually gets exploited: passwords + reachable + no confirmed firewall |
+| 3 | **Accounts** | Every account, which can log in, and **any UID 0 other than root** — the name is only a label, and backdoors are commonly installed this way |
+| 4 | **Privilege escalation** | `sudo -l` for the login, and root-equivalent group membership. **The `docker` group is treated as `NOPASSWD: ALL`**, because it is |
+| 5 | **SUID / SGID** | Every setuid and setgid binary, split three ways: expected, unexpected, and **interpreters or shells** — a setuid `find`, `python` or `vim` is a published one-liner to root |
+| 6 | **Kernel** | The running kernel versus the newest installed one |
+| 7 | **Exposed services** | Listening sockets, judged by whether they are reachable off-host |
+| 8 | **Firewall** | ufw, firewalld, nftables or iptables — active, and whether the default inbound policy is deny. An `ACCEPT` policy with no rules is reported as *inactive*, not as a firewall |
+| 9 | **File permissions** | `/etc/shadow`, `/etc/passwd`, `/etc/sudoers`, `/etc/environment`, and world-writable paths — **excluding sticky directories**, because `/tmp` being 1777 is the fix, not the bug |
+| 10 | **Exposed secrets** | Credential files readable beyond their owner, **by path and mode only** |
+| 11 | **Command injection** | Declared out of scope, explicitly. See below |
+| 12 | **Scheduled jobs** | Cron files a non-root user can edit — a scheduled root shell that survives reboots |
+| 13 | **Container posture** | Running containers: privilege, the user they run as, mounts, capabilities |
+| 14 | **Container escape** | Privileged containers, the Docker socket mounted in, host directories mounted in, `SYS_ADMIN` and friends |
+| 15 | **SELinux / AppArmor** | Enforcing, permissive, disabled — or genuinely not installed, which is a distribution choice and not a finding |
+
+### It reports coverage, not a score
+
+Most of these want root, and Vigil is designed to run without it. So every area
+carries its own state: **checked**, **partly checked**, **not visible**, or
+**not applicable** — per server, then rolled up.
+
+An area nobody could look at is never rendered as one that passed. A firewall
+that refused to report is *not visible*, with the note "needs root: ufw,
+firewalld and iptables all refuse to report to an ordinary user". A host with
+neither SELinux nor AppArmor installed is *not applicable*, not *disabled*.
+
+> **On secrets: nothing is ever read.** The finding for an exposed credential is
+> its path and its mode. Copying the contents into a dashboard to prove the
+> contents are exposed would be committing the same mistake a second time — and
+> there is a test asserting the probe contains no `cat`, `grep` or `head` of any
+> file it identifies this way.
+
+> **On command injection (#11):** it is an application vulnerability, and an
+> agentless host scanner cannot see how your code builds a shell command. Rather
+> than quietly leaving it off the list, Vigil shows it as *not applicable* and
+> says so: use SAST and input validation in the application itself.
+
+### Cost on the monitored host
+
+The two filesystem walks are the only expensive part. Both are `-xdev`, prune
+`/proc`, `/sys`, `/dev`, `/run`, `/snap` and the container layer stores, are
+wrapped in `timeout`, and cap their output — so a huge filesystem returns a
+partial answer rather than hanging the scan, and the page says when it did.
 
 ---
 
@@ -319,7 +384,7 @@ Everything is an environment variable on the `app` service.
 | `VG_ENCRYPTION_KEY` | generated | 32 bytes base64 (`openssl rand -base64 32`). Unset, one is generated into the data volume with a loud warning — fine locally, not for production |
 | `VG_PORT` | `8080` | Host port to publish on |
 | `VG_ALLOW_SIGNUP` | `on` | Set `off` to close sign-up once your accounts exist |
-| `VG_SCAN_MINUTES` | `15` | Minutes between automatic sweeps. `0` disables them and scanning becomes manual |
+| `VG_SCAN_MINUTES` | `15` | **Default** minutes between sweeps for a new account. Each account then sets its own on the Account page; this is only the starting value |
 | `VG_SCAN_CONCURRENCY` | `8` | How many servers to hold SSH connections to at once |
 | `VG_SCAN_RETENTION` | `2000` | Scans kept per server — about three weeks at the default interval, which is what the anomaly baselines are drawn from |
 | `VG_SSH_CONNECT_TIMEOUT_MS` | `12000` | Handshake timeout |
@@ -378,6 +443,7 @@ server/
   ssh/prune.mjs        the only write path: a fixed docker-prune allowlist
   engine/checks.mjs    facts -> findings (fixed thresholds)
   engine/anomalies.mjs facts + history -> anomalies (per-host baselines)
+  engine/hardening.mjs facts -> security findings, plus per-area coverage
   engine/stats.mjs     median, MAD, robust z, Theil-Sen
   store.mjs            scan orchestration, aggregation, scheduler
 web/                   vanilla ES modules, no build step, no framework
@@ -418,6 +484,8 @@ All endpoints are cookie-authenticated and scoped to the calling user.
 | `GET` | `/api/issues` | Findings **and** anomalies, with facets; `?severity=&category=&server=&q=&acked=` |
 | `GET` | `/api/anomalies` | Anomalies only |
 | `GET` | `/api/ports` · `/api/updates` · `/api/disks` · `/api/docker` | Fleet-wide inventories |
+| `GET` | `/api/hardening` | The 15 areas, their findings, and coverage per server |
+| `GET` `PUT` | `/api/settings` | Scan interval for the calling account |
 | `POST` | `/api/servers/:id/docker-prune` | Run one allowlisted cleanup action (`403` unless enabled) |
 | `POST` | `/api/scan` | Sweep every server (returns `202`; follow it on the event stream) |
 | `GET` | `/api/events` | Server-sent events: scan progress and completion |
@@ -431,7 +499,7 @@ All endpoints are cookie-authenticated and scoped to the calling user.
 npm test
 ```
 
-86 tests, no network and no database required. They cover the three places bugs
+112 tests, no network and no database required. They cover the four places bugs
 actually hide:
 
 - **Parsers**, against verbatim output from Ubuntu, Debian, RHEL and busybox
@@ -446,3 +514,9 @@ actually hide:
   shape, that none of them can target a container or an image, that only volume
   pruning is marked as destroying data, and that all of it is refused outright
   until it is explicitly enabled.
+- **The hardening promises**, asserted rather than documented: that no line of
+  the probe script matches a mutating verb; that both walks of `/` are pruned,
+  time-limited and capped; that the secret checks contain no `cat`, `grep` or
+  `head` of a file they identify; and that an unreadable firewall, a refused
+  Docker daemon and an absent SELinux each produce a *different* answer from a
+  clean one.
