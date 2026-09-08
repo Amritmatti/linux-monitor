@@ -1,0 +1,19 @@
+{
+  "name": "vigil",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Vigil - agentless Linux server anomaly detector. Connects over SSH read-only, finds critical issues, warnings, exposed ports, pending security updates and disks about to fill, and detects what changed against each server's own history.",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node server/index.mjs",
+    "dev": "node --watch server/index.mjs",
+    "test": "node --test test/"
+  },
+  "dependencies": {
+    "pg": "^8.13.1",
+    "ssh2": "^1.16.0"
+  },
+  "keywords": ["linux", "monitoring", "anomaly-detection", "ssh", "agentless", "security"],
+  "license": "UNLICENSED"
+}
